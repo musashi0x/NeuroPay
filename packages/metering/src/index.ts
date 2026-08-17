@@ -12,6 +12,46 @@
 export type { Clock } from "./clock.js";
 export { systemClock } from "./clock.js";
 
+export {
+  accrueCalls,
+  accrueSeconds,
+  accrueUnits,
+  createMeterState,
+  settle,
+} from "./accrual.js";
+export type { MeterState } from "./accrual.js";
+
+export { evaluatePolicy } from "./policy.js";
+export type { PolicyDecision } from "./policy.js";
+
+export {
+  computeLocalLimit,
+  initializeBudget,
+  preSignCheck,
+  readBudgetState,
+  recordPayment,
+  rollBudgetWindow,
+} from "./budget.js";
+export type {
+  BudgetCheckInput,
+  BudgetCheckResult,
+  BudgetConfig,
+  BudgetRefusalReason,
+} from "./budget.js";
+
+export { compareToExpected, computeExpectedCost } from "./expected.js";
+export type { ObservedConsumption, ToleranceCheckResult } from "./expected.js";
+
+export {
+  checkApproachingExpiry,
+  checkStreamOpenFitsExpiry,
+} from "./expiry.js";
+export type {
+  DurationSeconds,
+  ExpiryWarning,
+  OpenExpiryCheckResult,
+} from "./expiry.js";
+
 // The chain-free contracts the policy operates over, re-exported so callers do
 // not need a second import to name a policy input.
 export type {
