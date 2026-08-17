@@ -9,6 +9,7 @@ import type {
 export type LedgerEventType =
   | "stream.opened"
   | "stream.ended"
+  | "accrual.recorded"
   | "payment.demanded"
   | "payment.refused"
   | "payment.signed"
@@ -17,7 +18,9 @@ export type LedgerEventType =
   | "segment.delivered"
   | "settlement.submitted"
   | "settlement.confirmed"
-  | "settlement.failed";
+  | "settlement.failed"
+  | "session.granted"
+  | "session.revoked";
 
 /**
  * Why a payment did not complete.
@@ -76,6 +79,14 @@ export type LedgerEntry = {
   transactionHash: Hex | null;
   /** Set on `payment.refused`, `payment.rejected`, and `settlement.failed`. */
   classification: PaymentFailureClassification | null;
+  /**
+   * The earlier entry this one corrects, or null for an original observation.
+   *
+   * Entries are never rewritten, so a wrong amount or a misclassified outcome
+   * is fixed by appending a replacement that names the entry it supersedes.
+   * Readers that derive state resolve corrections before aggregating.
+   */
+  correctsEntryId: string | null;
   /** Free-form operator detail. Never key material. */
   detail: string | null;
 };
