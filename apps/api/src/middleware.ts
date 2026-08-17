@@ -17,7 +17,8 @@ const REQUEST_ID_HEADER = "x-request-id";
  * - Otherwise generates a v4 UUID.
  * - Echoes the id back on the response so callers can correlate.
  * - Exposes it on `c.get("requestId")` and `c.get("log")` (a child logger
- *   pre-bound with the request id).
+ *   pre-bound with the request id, so every log line for this request
+ *   carries it automatically).
  */
 export const requestId = (): MiddlewareHandler => {
   return async (c, next) => {
@@ -35,38 +36,37 @@ export const requestId = (): MiddlewareHandler => {
 
 /**
  * Logs one structured line per request after it completes.
- * Skips noisy success logs for probes by default; configure as needed.
+ * Uses the per-request child logger so `requestId` is included automatically.
  */
 export const httpLogger = (): MiddlewareHandler => {
   return async (c, next) => {
     const start = performance.now();
-    const log = (c.get("log") ?? logger) as typeof logger;
+    const log = c.get("log") ?? logger;
 
     await next();
 
     const durationMs = Number((performance.now() - start).toFixed(2));
     const status = c.res.status;
-    const method = c.req.method;
-    const path = c.req.path;
-
-    const fields = {
-      method,
-      path,
-      status,
-      durationMs,
-      ...(c.get("requestId") ? { requestId: c.get("requestId") } : {}),
-    };
+    const message = c.req.path;
 
     if (status >= 500) {
-      log.error(fields, "request failed");
+      log.error(
+        { method: c.req.method, path: message, status, durationMs },
+        "request failed",
+      );
     } else if (status >= 400) {
-      log.warn(fields, "client error");
+      log.warn(
+        { method: c.req.method, path: message, status, durationMs },
+        "client error",
+      );
     } else {
-      log.info(fields, "request completed");
+      log.info(
+        { method: c.req.method, path: message, status, durationMs },
+        "request completed",
+      );
     }
   };
 };
 
 /** Helper: pull the request-scoped logger from a Hono context. */
-export const getLog = (c: Context): typeof logger =>
-  (c.get("log") as typeof logger | undefined) ?? logger;
+export const getLog = (c: Context): typeof logger => c.get("log") ?? logger;

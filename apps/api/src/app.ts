@@ -51,10 +51,9 @@ app.onError((err, c) => {
   );
 });
 
-// 404 fallback also produces a structured log line at warn level.
+// 404 fallback - httpLogger already emits the warn line for non-2xx
+// responses, so we only need to return a structured error body.
 app.notFound((c) => {
-  const log = getLog(c);
-  log.warn({ method: c.req.method, path: c.req.path }, "route not found");
   return c.json(
     {
       error: {
