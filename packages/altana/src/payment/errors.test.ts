@@ -28,11 +28,10 @@ describe("PaymentFailureError", () => {
 
   it("preserves structured detail and cause when supplied", () => {
     const cause = new Error("upstream");
-    const err = new PaymentFailureError(
-      "budget-exhausted",
-      "over budget",
-      { detail: { demanded: 100n }, cause },
-    );
+    const err = new PaymentFailureError("budget-exhausted", "over budget", {
+      detail: { demanded: 100n },
+      cause,
+    });
     expect(err.detail).toEqual({ demanded: 100n });
     expect(err.cause).toBe(cause);
   });
@@ -57,7 +56,10 @@ describe("PaymentFailureError", () => {
       "verification-failed",
     ];
     for (const classification of categories) {
-      const err = new PaymentFailureError(classification, `dummy ${classification}`);
+      const err = new PaymentFailureError(
+        classification,
+        `dummy ${classification}`,
+      );
       expect(err.classification).toBe(classification);
     }
   });
@@ -103,13 +105,25 @@ describe("isBuyerPaymentFailure — type guard", () => {
 
 describe("looksLikeEoaOnlyFacilitator", () => {
   it("matches the canonical ecrecover-based-error styles", () => {
-    expect(looksLikeEoaOnlyFacilitator("ecrecover failed: invalid signature")).toBe(true);
+    expect(
+      looksLikeEoaOnlyFacilitator("ecrecover failed: invalid signature"),
+    ).toBe(true);
     expect(looksLikeEoaOnlyFacilitator("invalid signature length")).toBe(true);
-    expect(looksLikeEoaOnlyFacilitator("signature length is 65, got 98")).toBe(true);
-    expect(looksLikeEoaOnlyFacilitator("expected 65-byte signature")).toBe(true);
-    expect(looksLikeEoaOnlyFacilitator("expected 65 byte signature")).toBe(true);
-    expect(looksLikeEoaOnlyFacilitator("recovered address is 0x0000...")).toBe(true);
-    expect(looksLikeEoaOnlyFacilitator("signer recovered to zero address")).toBe(true);
+    expect(looksLikeEoaOnlyFacilitator("signature length is 65, got 98")).toBe(
+      true,
+    );
+    expect(looksLikeEoaOnlyFacilitator("expected 65-byte signature")).toBe(
+      true,
+    );
+    expect(looksLikeEoaOnlyFacilitator("expected 65 byte signature")).toBe(
+      true,
+    );
+    expect(looksLikeEoaOnlyFacilitator("recovered address is 0x0000...")).toBe(
+      true,
+    );
+    expect(
+      looksLikeEoaOnlyFacilitator("signer recovered to zero address"),
+    ).toBe(true);
   });
 
   it("matches across an Error instance", () => {

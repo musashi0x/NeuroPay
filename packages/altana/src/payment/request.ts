@@ -235,9 +235,7 @@ export async function parsePaymentRequired(
  * Anything else — a missing field, an `accepts` that isn't an array, a
  * `x402Version` that isn't a number — is a verification failure.
  */
-export function normalizePaymentRequired(
-  raw: unknown,
-): X402PaymentRequired {
+export function normalizePaymentRequired(raw: unknown): X402PaymentRequired {
   if (typeof raw !== "object" || raw === null) {
     throw new PaymentFailureError(
       "verification-failed",

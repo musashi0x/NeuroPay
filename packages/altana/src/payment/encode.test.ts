@@ -42,7 +42,9 @@ describe("encodeB402Envelope — b402 dialect shape", () => {
       { signedPayload: PAYLOAD, requirement: REQ, resourceUrl: RESOURCE_URL },
       WALLET_ADDRESS,
     );
-    expect(env.decoded.payload.signature).toBe(env.decoded.payload.permit.signature);
+    expect(env.decoded.payload.signature).toBe(
+      env.decoded.payload.permit.signature,
+    );
   });
 
   it("sets the top-level from to the payer address", () => {

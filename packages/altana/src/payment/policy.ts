@@ -19,10 +19,7 @@
  * `signX402PaymentFor`.
  */
 
-import {
-  compareToExpected,
-  preSignCheck,
-} from "@neuro-pay/metering";
+import { compareToExpected, preSignCheck } from "@neuro-pay/metering";
 import type { X402Requirement } from "@neuro-pay/types";
 import { PaymentFailureError } from "./errors.js";
 import type { PaymentClientContext } from "./context.js";

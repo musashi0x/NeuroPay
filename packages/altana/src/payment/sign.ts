@@ -150,8 +150,7 @@ export async function signX402PaymentFor(
 function toSdkRequirement(
   requirement: X402Requirement,
 ): Parameters<typeof signX402Payment>[1] {
-  const method =
-    requirement.rail === "permit2" ? "permit2-exact" : "eip3009";
+  const method = requirement.rail === "permit2" ? "permit2-exact" : "eip3009";
   return {
     scheme: "exact",
     network:

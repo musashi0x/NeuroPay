@@ -39,7 +39,9 @@ describe("selectX402Requirement — chain preference", () => {
     try {
       selectX402Requirement([WRONG_CHAIN_REQUIREMENT], defaultOptions);
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("wrong-chain-only");
+      expect((err as PaymentFailureError).classification).toBe(
+        "wrong-chain-only",
+      );
     }
   });
 
@@ -77,7 +79,9 @@ describe("selectX402Requirement — token allowlist", () => {
     try {
       selectX402Requirement([UNPERMITTED_TOKEN_REQUIREMENT], defaultOptions);
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("unpermitted-token");
+      expect((err as PaymentFailureError).classification).toBe(
+        "unpermitted-token",
+      );
     }
   });
 
@@ -110,7 +114,9 @@ describe("selectX402Requirement — empty accepts", () => {
     try {
       selectX402Requirement([], defaultOptions);
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("no-payable-option");
+      expect((err as PaymentFailureError).classification).toBe(
+        "no-payable-option",
+      );
     }
   });
 });

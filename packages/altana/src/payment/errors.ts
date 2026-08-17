@@ -120,9 +120,7 @@ export class PaymentFailureError extends Error {
   }
 }
 
-function causeToOptions(
-  cause: unknown,
-): { cause: unknown } | undefined {
+function causeToOptions(cause: unknown): { cause: unknown } | undefined {
   // Error's constructor takes options with `cause`; passing `undefined`
   // would still set cause to undefined on the base, which we then
   // overwrite. Pass nothing when no cause to avoid an empty options bag.

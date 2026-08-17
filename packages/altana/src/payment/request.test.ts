@@ -189,7 +189,9 @@ describe("fetchWithX402 — 4xx re-classification", () => {
       expect.fail("expected PaymentFailureError");
     } catch (err) {
       expect(err).toBeInstanceOf(PaymentFailureError);
-      expect((err as PaymentFailureError).classification).toBe("verification-failed");
+      expect((err as PaymentFailureError).classification).toBe(
+        "verification-failed",
+      );
     }
   });
 });
@@ -202,7 +204,9 @@ describe("fetchWithX402 — 402 body parsing", () => {
       expect.fail("expected PaymentFailureError");
     } catch (err) {
       expect(err).toBeInstanceOf(PaymentFailureError);
-      expect((err as PaymentFailureError).classification).toBe("verification-failed");
+      expect((err as PaymentFailureError).classification).toBe(
+        "verification-failed",
+      );
     }
   });
 
@@ -212,7 +216,9 @@ describe("fetchWithX402 — 402 body parsing", () => {
       expect.fail("expected PaymentFailureError");
     } catch (err) {
       expect(err).toBeInstanceOf(PaymentFailureError);
-      expect((err as PaymentFailureError).classification).toBe("verification-failed");
+      expect((err as PaymentFailureError).classification).toBe(
+        "verification-failed",
+      );
     }
   });
 
@@ -222,7 +228,9 @@ describe("fetchWithX402 — 402 body parsing", () => {
       expect.fail("expected PaymentFailureError");
     } catch (err) {
       expect(err).toBeInstanceOf(PaymentFailureError);
-      expect((err as PaymentFailureError).classification).toBe("verification-failed");
+      expect((err as PaymentFailureError).classification).toBe(
+        "verification-failed",
+      );
     }
   });
 
@@ -237,7 +245,9 @@ describe("fetchWithX402 — 402 body parsing", () => {
 describe("fetchWithX402 — policy runs before signing", () => {
   it("does NOT sign when the session is expired", async () => {
     const { signX402Payment } = await import("@altananetwork/sdk");
-    const fetchImpl = vi.fn(async () => makeResponse(PAYMENT_REQUIRED_BODY, 402));
+    const fetchImpl = vi.fn(async () =>
+      makeResponse(PAYMENT_REQUIRED_BODY, 402),
+    );
 
     try {
       await fetchWithX402(URL, {
@@ -251,7 +261,9 @@ describe("fetchWithX402 — policy runs before signing", () => {
       expect.fail("expected PaymentFailureError");
     } catch (err) {
       expect(err).toBeInstanceOf(PaymentFailureError);
-      expect((err as PaymentFailureError).classification).toBe("session-expired");
+      expect((err as PaymentFailureError).classification).toBe(
+        "session-expired",
+      );
     }
 
     // The SDK's signX402Payment was never called — the policy refused

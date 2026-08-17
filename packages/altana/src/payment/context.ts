@@ -34,11 +34,7 @@
  * gets the signer transitively, via `signX402PaymentFor`.
  */
 
-import type {
-  Address,
-  BudgetState,
-  SmallestUnits,
-} from "@neuro-pay/types";
+import type { Address, BudgetState, SmallestUnits } from "@neuro-pay/types";
 import type { Session } from "@altananetwork/sdk";
 
 export type PaymentClientContext = {

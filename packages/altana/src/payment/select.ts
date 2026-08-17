@@ -192,9 +192,10 @@ export function normalizeRequirement(
 ): X402Requirement {
   return {
     ...requirement,
-    resource: requirement.resource && requirement.resource.length > 0
-      ? requirement.resource
-      : resourceUrl,
+    resource:
+      requirement.resource && requirement.resource.length > 0
+        ? requirement.resource
+        : resourceUrl,
     maxAmountRequired: normalizeAmount(requirement.maxAmountRequired),
   };
 }

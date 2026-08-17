@@ -51,8 +51,7 @@ export const ALT_CHAIN_ID = 8453;
  * 65-byte EOA signature — the spec calls this out as the assertion
  * that distinguishes smart-account envelopes from bare EOA sigs.
  */
-export const NESTED_ERC1271_ENVELOPE = (
-  "0x" +
+export const NESTED_ERC1271_ENVELOPE = ("0x" +
   // 2-byte envelope prefix
   "a1b2" +
   // 32-byte inner signature blob
@@ -60,8 +59,7 @@ export const NESTED_ERC1271_ENVELOPE = (
   // 32-byte keyHash
   "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" +
   // 32-byte prehash
-  "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-) as `0x${string}`;
+  "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210") as `0x${string}`;
 
 /** Asserts the envelope is exactly 98 bytes (2 + 32 + 32 + 32). */
 export const NESTED_ERC1271_BYTES = 98;

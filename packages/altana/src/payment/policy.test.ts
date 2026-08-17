@@ -73,7 +73,9 @@ describe("policyCheck — session expired", () => {
         payment: { ...baseInput.payment, now: () => 1_700_000_000 },
       });
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("session-expired");
+      expect((err as PaymentFailureError).classification).toBe(
+        "session-expired",
+      );
     }
   });
 
@@ -140,7 +142,9 @@ describe("policyCheck — budget exhaustion", () => {
         },
       });
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("budget-exhausted");
+      expect((err as PaymentFailureError).classification).toBe(
+        "budget-exhausted",
+      );
     }
   });
 
@@ -236,7 +240,9 @@ describe("policyCheck — ordering", () => {
         },
       });
     } catch (err) {
-      expect((err as PaymentFailureError).classification).toBe("session-expired");
+      expect((err as PaymentFailureError).classification).toBe(
+        "session-expired",
+      );
     }
   });
 });
