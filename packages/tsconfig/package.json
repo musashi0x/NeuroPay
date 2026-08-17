@@ -1,0 +1,11 @@
+{
+  "name": "@neuro-pay/tsconfig",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./base.json": "./base.json",
+    "./node.json": "./node.json",
+    "./nextjs.json": "./nextjs.json"
+  }
+}

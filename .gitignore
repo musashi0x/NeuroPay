@@ -1,0 +1,27 @@
+# dependencies
+node_modules
+
+# builds
+.next
+out
+dist
+.turbo
+
+# test
+coverage
+
+# env
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# misc
+.DS_Store
+*.pem
+*.tsbuildinfo
+
+# AI
+openspec/
+.claude/
+.opencode/

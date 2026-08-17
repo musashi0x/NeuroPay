@@ -1,0 +1,24 @@
+{
+  "name": "@neuro-pay/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./next": "./next.js"
+  },
+  "dependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint-config-next": "^16.3.1",
+    "globals": "^17.11.0",
+    "typescript-eslint": "^8.67.0"
+  },
+  "devDependencies": {
+    "eslint": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "eslint": "^9.39.5",
+    "typescript": "~5.9.3"
+  }
+}

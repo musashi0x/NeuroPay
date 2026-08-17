@@ -1,0 +1,8 @@
+{
+  "extends": "@neuro-pay/tsconfig/node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "vitest.config.ts", "eslint.config.js"]
+}
