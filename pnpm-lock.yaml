@@ -15,6 +15,9 @@ catalogs:
     prettier:
       specifier: 3.9.6
       version: 3.9.6
+    tsx:
+      specifier: 4.23.12
+      version: 4.23.12
     typescript:
       specifier: 5.9.3
       version: 5.9.3
@@ -146,6 +149,9 @@ importers:
       eslint:
         specifier: 'catalog:'
         version: 9.39.5(jiti@2.7.0)
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.12
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

@@ -16,7 +16,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "provision": "tsx scripts/provision.ts"
   },
   "dependencies": {
     "@altananetwork/sdk": "catalog:",
@@ -29,6 +30,7 @@
     "@types/node": "^22.18.12",
     "eslint": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "tsx": "catalog:"
   }
 }

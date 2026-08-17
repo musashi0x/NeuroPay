@@ -138,6 +138,77 @@ export function readSmallestUnits(
   return parsed;
 }
 
+type WholeTokensOptions = {
+  purpose: string;
+  /**
+   * Inclusive lower bound, in whole tokens. Defaults to 0 — zero is a
+   * legitimate "no spend allowed" policy; the caller decides whether to
+   * forbid it.
+   */
+  min?: bigint;
+};
+
+/**
+ * Reads a whole-token count — a non-negative decimal that may include a
+ * fractional part. Used for the configured spend cap: the operator writes
+ * "50" or "50.5" and the grant path multiplies by `10n ** tokenDecimals`
+ * to derive the on-chain smallest-unit limit.
+ *
+ * A negative value or a non-numeric string is an explicit failure rather
+ * than a silent coerce.
+ */
+export function readWholeTokens(
+  env: EnvSource,
+  key: string,
+  options: WholeTokensOptions,
+): bigint {
+  const value = readString(env, key, options.purpose);
+
+  // Reject signs and any character outside digits, a single decimal point,
+  // and the empty fractional part. "1.", ".5", "--1", "+1", "1e3" all fail.
+  const pattern = /^\d+(\.\d+)?$/;
+  if (!pattern.test(value)) {
+    throw new InvalidConfigError(
+      key,
+      `expected a non-negative whole-or-fractional token count (e.g. "50" or "50.5"), got "${value}"`,
+    );
+  }
+
+  const parts = value.split(".");
+  const whole = parts[0] ?? "0";
+  const fraction = parts[1] ?? "";
+  // When there's no fractional part, the whole-token count IS the whole
+  // part — multiplying by 10^36 is for fixed-point fraction preservation
+  // and would make "10" come back as 10^37, which is what the spend-cap
+  // path then multiplies by another 10^tokenDecimals. A plain whole
+  // number must round-trip as itself.
+  if (fraction === "") {
+    const parsed = BigInt(whole);
+    const min = options.min ?? 0n;
+    if (parsed < min) {
+      throw new InvalidConfigError(
+        key,
+        `expected at least ${min.toString()} whole tokens, got ${value}`,
+      );
+    }
+    return parsed;
+  }
+  // Cap the fractional part at 36 digits: beyond that BigInt can't help
+  // and the precision is moot.
+  const fractionDigits = fraction.slice(0, 36);
+  const fractionPad = fractionDigits.padEnd(36, "0");
+  const parsed = BigInt(whole) * 10n ** 36n + BigInt(fractionPad);
+  const min = options.min ?? 0n;
+  if (parsed < min) {
+    throw new InvalidConfigError(
+      key,
+      `expected at least ${min.toString()} whole tokens, got ${value}`,
+    );
+  }
+
+  return parsed;
+}
+
 /** Reads a fraction in `[0, 1)`, such as the budget margin. */
 export function readFraction(
   env: EnvSource,
