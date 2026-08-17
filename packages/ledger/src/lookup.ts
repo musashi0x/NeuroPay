@@ -116,7 +116,9 @@ export async function lookupByNonce(
  */
 export async function detectDuplicateNonces(
   store: LedgerStore,
-): Promise<{ nonce: string; verificationCount: number; submissionCount: number }[]> {
+): Promise<
+  { nonce: string; verificationCount: number; submissionCount: number }[]
+> {
   const entries = await store.entries();
   const buckets = new Map<
     string,
@@ -125,8 +127,10 @@ export async function detectDuplicateNonces(
 
   for (const entry of entries) {
     if (entry.nonce === null) continue;
-    const bucket =
-      buckets.get(entry.nonce) ?? { verificationCount: 0, submissionCount: 0 };
+    const bucket = buckets.get(entry.nonce) ?? {
+      verificationCount: 0,
+      submissionCount: 0,
+    };
     if (entry.event === "payment.verified") bucket.verificationCount += 1;
     if (entry.event === "settlement.submitted") bucket.submissionCount += 1;
     buckets.set(entry.nonce, bucket);

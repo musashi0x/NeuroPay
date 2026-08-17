@@ -188,7 +188,8 @@ export class SessionStore {
     }
     const next: PersistedSession = {
       ...existing,
-      grantTransactionHash: grantTransactionHash as PersistedSession["grantTransactionHash"],
+      grantTransactionHash:
+        grantTransactionHash as PersistedSession["grantTransactionHash"],
     };
     this.#byWallet.set(walletAddress, next);
     if (this.#fileStorePath !== undefined) {
@@ -204,8 +205,9 @@ export class SessionStore {
   #flushToDisk(): void {
     if (this.#fileStorePath === undefined) return;
     const path = this.#fileStorePath;
-    const snapshot: Record<Address, PersistedSession> =
-      Object.fromEntries(this.#byWallet);
+    const snapshot: Record<Address, PersistedSession> = Object.fromEntries(
+      this.#byWallet,
+    );
     const blob = encode(snapshot);
     // Round-trip the blob we just wrote. A drift here means the encoder
     // changed shape since this snapshot was assembled; we'd rather fail

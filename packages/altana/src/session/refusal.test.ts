@@ -51,7 +51,10 @@ class StubSessionStore {
     return this.#byWallet.get(walletAddress)?.persisted;
   }
 
-  resolve(walletAddress: Address): { persisted: PersistedSession; signer: unknown } {
+  resolve(walletAddress: Address): {
+    persisted: PersistedSession;
+    signer: unknown;
+  } {
     const entry = this.#byWallet.get(walletAddress);
     if (entry === undefined) {
       throw new SessionStoreError(
@@ -203,7 +206,9 @@ const TOKEN = "0x2222222222222222222222222222222222222222" as Address;
 const PUBKEY =
   "0x04deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" as Hex;
 
-function makePersisted(overrides: Partial<PersistedSession> = {}): PersistedSession {
+function makePersisted(
+  overrides: Partial<PersistedSession> = {},
+): PersistedSession {
   return {
     walletAddress: WALLET,
     publicKey: PUBKEY,
@@ -222,9 +227,9 @@ function makePersisted(overrides: Partial<PersistedSession> = {}): PersistedSess
 describe("assertCanSign — refusal-before-signing", () => {
   it("throws SessionNotFoundError when no session is persisted", () => {
     const store = new StubSessionStore();
-    expect(() =>
-      assertCanSign({ store, walletAddress: WALLET }),
-    ).toThrowError(RefusalError);
+    expect(() => assertCanSign({ store, walletAddress: WALLET })).toThrowError(
+      RefusalError,
+    );
     try {
       assertCanSign({ store, walletAddress: WALLET });
       expect.unreachable("should have refused");

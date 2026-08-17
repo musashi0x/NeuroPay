@@ -136,7 +136,10 @@ export async function grantSession(
     return { signature: c.signature } satisfies SdkCallPermission;
   });
 
-  const limit = deriveSpendLimit(input.config.spendCap, input.tokenDecimals);
+  // `config.spendCap` is already in smallest units — the config layer
+  // converted from whole tokens using the same `tokenDecimals` we were
+  // handed here. Don't re-multiply.
+  const limit = input.config.spendCap;
   const sdkSpend: SdkSpendPermission[] = [
     {
       limit,
@@ -183,8 +186,7 @@ export async function grantSession(
     publicKey: result.publicKey,
     permissions: persistedPermissions,
     expiry: result.expiry,
-    grantTransactionHash:
-      result.transactionHash ?? null,
+    grantTransactionHash: result.transactionHash ?? null,
     railProvisioned: false,
     createdAt: now,
   };

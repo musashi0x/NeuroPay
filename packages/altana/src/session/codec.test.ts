@@ -84,12 +84,18 @@ describe("session codec — stable key ordering", () => {
   it("produces identical bytes for two objects with different insertion order", () => {
     const a = {
       walletAddress: "0xaaa",
-      permissions: { calls: [], spend: [{ limit: 1n, period: "day" as const }] },
+      permissions: {
+        calls: [],
+        spend: [{ limit: 1n, period: "day" as const }],
+      },
       expiry: 100,
     };
     const b = {
       expiry: 100,
-      permissions: { spend: [{ limit: 1n, period: "day" as const }], calls: [] },
+      permissions: {
+        spend: [{ limit: 1n, period: "day" as const }],
+        calls: [],
+      },
       walletAddress: "0xaaa",
     };
     expect(encode(a)).toBe(encode(b));

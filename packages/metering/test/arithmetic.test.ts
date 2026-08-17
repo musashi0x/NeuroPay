@@ -84,7 +84,9 @@ describe("requireNonNegativeAmount", () => {
   });
 
   it("rejects non-bigints and negatives", () => {
-    expect(() => requireNonNegativeAmount(0 as unknown as bigint, "x")).toThrow(TypeError);
+    expect(() => requireNonNegativeAmount(0 as unknown as bigint, "x")).toThrow(
+      TypeError,
+    );
     expect(() => requireNonNegativeAmount(-1n, "x")).toThrow(RangeError);
   });
 });

@@ -40,11 +40,7 @@ import {
   requireNonNegativeAmount,
 } from "./arithmetic.js";
 import type { Clock } from "./clock.js";
-import type {
-  Address,
-  BudgetState,
-  SmallestUnits,
-} from "@neuro-pay/types";
+import type { Address, BudgetState, SmallestUnits } from "@neuro-pay/types";
 
 /**
  * Why a payment was refused before signing. Distinct classifications matter
@@ -54,9 +50,7 @@ import type {
  * but a different one).
  */
 export type BudgetRefusalReason =
-  | "over-local-budget"
-  | "over-on-chain-cap"
-  | "margin-out-of-range";
+  "over-local-budget" | "over-on-chain-cap" | "margin-out-of-range";
 
 /**
  * The input shape for a budget check. Carries the live window state plus
@@ -75,8 +69,7 @@ export type BudgetCheckInput = {
  * refused with the reason. The refusal is a value, not an exception.
  */
 export type BudgetCheckResult =
-  | { ok: true }
-  | { ok: false; reason: BudgetRefusalReason };
+  { ok: true } | { ok: false; reason: BudgetRefusalReason };
 
 const MS_PER_SECOND = 1000n;
 
@@ -137,10 +130,7 @@ const BASIS_POINTS_SCALE = 10_000n;
  * The roll is idempotent: calling it repeatedly with the same `now` returns
  * the same state, so the budget is safe to read-and-roll on every segment.
  */
-export function rollBudgetWindow(
-  state: BudgetState,
-  now: number,
-): BudgetState {
+export function rollBudgetWindow(state: BudgetState, now: number): BudgetState {
   const windowStartMs = Date.parse(state.windowStart);
   const windowEndMs = Date.parse(state.windowEnd);
 
@@ -157,8 +147,7 @@ export function rollBudgetWindow(
   // Advance to the window containing `now`, aligned to periodMs boundaries.
   const periodMs = BigInt(state.periodSeconds) * MS_PER_SECOND;
   const nowMs = BigInt(now);
-  const newStartMs =
-    (nowMs / periodMs) * periodMs;
+  const newStartMs = (nowMs / periodMs) * periodMs;
 
   // If the existing window is still valid for `now`, keep it; only reset on
   // a real advance. This keeps the boundary idempotent at the exact roll

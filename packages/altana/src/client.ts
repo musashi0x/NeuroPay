@@ -134,11 +134,7 @@ export async function assertTokenDecimals(
     functionName: "decimals",
   });
   if (onChain !== chain.tokenDecimals) {
-    throw new DecimalsMismatchError(
-      chain.tokenDecimals,
-      onChain,
-      chain.token,
-    );
+    throw new DecimalsMismatchError(chain.tokenDecimals, onChain, chain.token);
   }
 }
 
@@ -171,9 +167,11 @@ export async function buildAltanaClient(
   },
 ): Promise<AltanaClientContext> {
   const network = networkConfigFor(chain.chainId, chain.rpcUrl);
-  const publicClient = options?.client ?? publicClientFor(chain.chainId, chain.rpcUrl);
+  const publicClient =
+    options?.client ?? publicClientFor(chain.chainId, chain.rpcUrl);
   await assertTokenDecimals(publicClient, chain);
   const client =
-    options?.sdkClient ?? createClient({ chains: [network], defaultChainId: chain.chainId });
+    options?.sdkClient ??
+    createClient({ chains: [network], defaultChainId: chain.chainId });
   return { client, network, publicClient, chain };
 }

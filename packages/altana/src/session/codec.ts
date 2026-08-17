@@ -84,9 +84,7 @@ function decodeValue(value: unknown): unknown {
     try {
       return BigInt(raw);
     } catch {
-      throw new CodecError(
-        `bigint tag is not a valid decimal: ${raw}`,
-      );
+      throw new CodecError(`bigint tag is not a valid decimal: ${raw}`);
     }
   }
   if (Array.isArray(value)) {

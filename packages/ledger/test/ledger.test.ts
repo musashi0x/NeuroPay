@@ -180,8 +180,9 @@ describe("ledger — window roll", () => {
     });
 
     // Inside the window: the payment counts.
-    const insideMs = (store as LedgerStore & { __clockMs: () => number })
-      .__clockMs();
+    const insideMs = (
+      store as LedgerStore & { __clockMs: () => number }
+    ).__clockMs();
     const inside = await computeWindowSpend(store, {
       sessionPublicKey: SAMPLE_SESSION_PUBKEY,
       token: SAMPLE_TOKEN,
@@ -226,8 +227,9 @@ describe("ledger — window roll", () => {
     });
 
     // A second, fresh payment after the first has rolled out.
-    const ledgerNow = (store as LedgerStore & { __clockMs: () => number })
-      .__clockMs();
+    const ledgerNow = (
+      store as LedgerStore & { __clockMs: () => number }
+    ).__clockMs();
     const futureNow = ledgerNow + periodMs + 5;
 
     await recordPaymentDemanded({
@@ -365,7 +367,9 @@ describe("ledger — nonce reconciliation", () => {
     const life = await lookupByNonce(store, nonce);
     expect(life).not.toBeNull();
     expect(life!.settlementFailed).toHaveLength(1);
-    expect(life!.settlementFailed[0]?.classification).toBe("settler-out-of-gas");
+    expect(life!.settlementFailed[0]?.classification).toBe(
+      "settler-out-of-gas",
+    );
     expect(life!.settlementConfirmed).toHaveLength(0);
   });
 
@@ -453,59 +457,63 @@ describe("ledger — correction by append", () => {
   });
 
   it("surfaces a correction that reclassifies a settlement.failed (event type preserved)", async () => {
-      // Correction-by-append never changes the event type — the correction
-      // is "same stage, fixed classification". This test pins that contract
-      // and confirms the aggregator honours it.
-      const streamCtx = ctx("stream-correct-exposure");
-      const segment = await recordSegmentDelivered({
-        store,
-        ctx: streamCtx,
-        amount: 2_000n,
-        nonce: "0xc2",
-        secondsDelivered: 2,
-        unitsDelivered: 2,
-      });
-      const failed = await recordSettlementFailed({
-        store,
-        ctx: streamCtx,
-        amount: 2_000n,
-        nonce: "0xc2",
-        classification: "settler-out-of-gas",
-      });
-
-      // Before correction: in-flight exposure is up, unrecovered is up.
-      let exposure = await computeUnsettledExposure(store);
-      let byStream = exposure.find((e) => e.streamId === "stream-correct-exposure");
-      expect(byStream?.inFlight).toBe(2_000n);
-      expect(byStream?.unrecovered).toBe(2_000n);
-
-      // Correct the failed entry's classification (still a `settlement.failed`,
-      // but with the right reason). The contract is the event stays the same.
-      await recordCorrection(store, failed, {
-        classification: "settlement-reverted",
-        detail: "settler actually reverted on-chain with a different reason",
-      });
-
-      // In-flight is unchanged (still 2000n — failed settlements don't fall
-      // exposure), unrecovered is also unchanged (the correction is still a
-      // failed settlement from the aggregator's point of view).
-      exposure = await computeUnsettledExposure(store);
-      byStream = exposure.find((e) => e.streamId === "stream-correct-exposure");
-      expect(byStream?.inFlight).toBe(2_000n);
-      expect(byStream?.unrecovered).toBe(2_000n);
-
-      // The aggregator's view is corrected: only the latest entry in the
-      // logical family is counted. The original `settlement.failed` is on
-      // disk but invisible to the aggregator.
-      const entries = await store.entries();
-      expect(entries.filter((e) => e.correctsEntryId === failed.id)).toHaveLength(1);
-
-      // The delivered segment is still on disk unchanged.
-      const segmentEntry = entries.find((e) => e.id === segment.id);
-      expect(segmentEntry?.event).toBe("segment.delivered");
-      expect(segmentEntry?.amount).toBe(2_000n);
-      expect(entries.some((e) => e.id === failed.id)).toBe(true);
+    // Correction-by-append never changes the event type — the correction
+    // is "same stage, fixed classification". This test pins that contract
+    // and confirms the aggregator honours it.
+    const streamCtx = ctx("stream-correct-exposure");
+    const segment = await recordSegmentDelivered({
+      store,
+      ctx: streamCtx,
+      amount: 2_000n,
+      nonce: "0xc2",
+      secondsDelivered: 2,
+      unitsDelivered: 2,
     });
+    const failed = await recordSettlementFailed({
+      store,
+      ctx: streamCtx,
+      amount: 2_000n,
+      nonce: "0xc2",
+      classification: "settler-out-of-gas",
+    });
+
+    // Before correction: in-flight exposure is up, unrecovered is up.
+    let exposure = await computeUnsettledExposure(store);
+    let byStream = exposure.find(
+      (e) => e.streamId === "stream-correct-exposure",
+    );
+    expect(byStream?.inFlight).toBe(2_000n);
+    expect(byStream?.unrecovered).toBe(2_000n);
+
+    // Correct the failed entry's classification (still a `settlement.failed`,
+    // but with the right reason). The contract is the event stays the same.
+    await recordCorrection(store, failed, {
+      classification: "settlement-reverted",
+      detail: "settler actually reverted on-chain with a different reason",
+    });
+
+    // In-flight is unchanged (still 2000n — failed settlements don't fall
+    // exposure), unrecovered is also unchanged (the correction is still a
+    // failed settlement from the aggregator's point of view).
+    exposure = await computeUnsettledExposure(store);
+    byStream = exposure.find((e) => e.streamId === "stream-correct-exposure");
+    expect(byStream?.inFlight).toBe(2_000n);
+    expect(byStream?.unrecovered).toBe(2_000n);
+
+    // The aggregator's view is corrected: only the latest entry in the
+    // logical family is counted. The original `settlement.failed` is on
+    // disk but invisible to the aggregator.
+    const entries = await store.entries();
+    expect(entries.filter((e) => e.correctsEntryId === failed.id)).toHaveLength(
+      1,
+    );
+
+    // The delivered segment is still on disk unchanged.
+    const segmentEntry = entries.find((e) => e.id === segment.id);
+    expect(segmentEntry?.event).toBe("segment.delivered");
+    expect(segmentEntry?.amount).toBe(2_000n);
+    expect(entries.some((e) => e.id === failed.id)).toBe(true);
+  });
 
   it("append-only invariant: store.entries grows monotonically and never edits a row", async () => {
     const streamCtx = ctx("stream-appendonly");

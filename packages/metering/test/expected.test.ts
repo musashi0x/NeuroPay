@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  compareToExpected,
-  computeExpectedCost,
-} from "../src/expected.js";
+import { compareToExpected, computeExpectedCost } from "../src/expected.js";
 import type { PriceSheet } from "@neuro-pay/types";
 
 /**

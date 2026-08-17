@@ -24,11 +24,7 @@
  * and `./secrets.js` for tests.
  */
 
-export type {
-  AppendInput,
-  LedgerStore,
-  LedgerStoreOptions,
-} from "./store.js";
+export type { AppendInput, LedgerStore, LedgerStoreOptions } from "./store.js";
 export {
   KeyMaterialRejectedError,
   openLedgerStore,

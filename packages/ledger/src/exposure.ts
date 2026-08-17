@@ -19,11 +19,7 @@
  * `settlement.failed` and then corrected still lowers exposure.
  */
 
-import type {
-  Address,
-  LedgerEntry,
-  SmallestUnits,
-} from "@neuro-pay/types";
+import type { Address, LedgerEntry, SmallestUnits } from "@neuro-pay/types";
 
 import type { LedgerStore } from "./store.js";
 
@@ -95,9 +91,7 @@ export async function computeUnsettledExposure(
         // we still drop the number to honour the spec's "falls by the
         // same amount" rule.
         bucket.inFlight =
-          bucket.inFlight >= entry.amount
-            ? bucket.inFlight - entry.amount
-            : 0n;
+          bucket.inFlight >= entry.amount ? bucket.inFlight - entry.amount : 0n;
         break;
       case "settlement.failed":
         // Failed settlements do *not* lower in-flight. They keep the

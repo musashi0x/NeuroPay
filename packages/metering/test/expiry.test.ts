@@ -82,14 +82,18 @@ describe("checkStreamOpenFitsExpiry", () => {
   });
 
   it("rejects negative or non-finite projected durations", () => {
-    expect(() =>
-      checkStreamOpenFitsExpiry(-1, EXPIRES_AT, clockAt(0)),
-    ).toThrow(RangeError);
+    expect(() => checkStreamOpenFitsExpiry(-1, EXPIRES_AT, clockAt(0))).toThrow(
+      RangeError,
+    );
     expect(() =>
       checkStreamOpenFitsExpiry(Number.NaN, EXPIRES_AT, clockAt(0)),
     ).toThrow(RangeError);
     expect(() =>
-      checkStreamOpenFitsExpiry(Number.POSITIVE_INFINITY, EXPIRES_AT, clockAt(0)),
+      checkStreamOpenFitsExpiry(
+        Number.POSITIVE_INFINITY,
+        EXPIRES_AT,
+        clockAt(0),
+      ),
     ).toThrow(RangeError);
   });
 });
@@ -98,7 +102,11 @@ describe("checkApproachingExpiry", () => {
   it("does not warn when lifetime comfortably exceeds one tick", () => {
     // Scenario: approaching expiry is surfaced.
     // tickInterval = 60 s; lifetime remaining = 600 s → plenty of room.
-    const result = checkApproachingExpiry(EXPIRES_AT, 60, clockAt(EXPIRES_AT_MS - 600_000));
+    const result = checkApproachingExpiry(
+      EXPIRES_AT,
+      60,
+      clockAt(EXPIRES_AT_MS - 600_000),
+    );
 
     expect(result.warn).toBe(false);
     expect(result.remainingSeconds).toBe(600);
@@ -106,7 +114,11 @@ describe("checkApproachingExpiry", () => {
 
   it("warns when fewer than one tickInterval of lifetime remains", () => {
     // 30 s remaining, 60 s tick → next tick may not be payable.
-    const result = checkApproachingExpiry(EXPIRES_AT, 60, clockAt(EXPIRES_AT_MS - 30_000));
+    const result = checkApproachingExpiry(
+      EXPIRES_AT,
+      60,
+      clockAt(EXPIRES_AT_MS - 30_000),
+    );
 
     expect(result.warn).toBe(true);
     expect(result.remainingSeconds).toBe(30);
@@ -116,7 +128,11 @@ describe("checkApproachingExpiry", () => {
     // The threshold is `remainingSeconds < tickIntervalSeconds`; equal is
     // still plenty, so no warning. Documented explicitly so a caller relying
     // on the boundary does not get a false positive.
-    const result = checkApproachingExpiry(EXPIRES_AT, 60, clockAt(EXPIRES_AT_MS - 60_000));
+    const result = checkApproachingExpiry(
+      EXPIRES_AT,
+      60,
+      clockAt(EXPIRES_AT_MS - 60_000),
+    );
 
     expect(result.warn).toBe(false);
     expect(result.remainingSeconds).toBe(60);
@@ -160,12 +176,12 @@ describe("checkApproachingExpiry", () => {
   });
 
   it("rejects malformed expiry timestamps and invalid tick intervals", () => {
-    expect(() =>
-      checkApproachingExpiry("not-a-date", 60, clockAt(0)),
-    ).toThrow(RangeError);
-    expect(() =>
-      checkApproachingExpiry(EXPIRES_AT, -1, clockAt(0)),
-    ).toThrow(RangeError);
+    expect(() => checkApproachingExpiry("not-a-date", 60, clockAt(0))).toThrow(
+      RangeError,
+    );
+    expect(() => checkApproachingExpiry(EXPIRES_AT, -1, clockAt(0))).toThrow(
+      RangeError,
+    );
     expect(() =>
       checkApproachingExpiry(EXPIRES_AT, Number.NaN, clockAt(0)),
     ).toThrow(RangeError);

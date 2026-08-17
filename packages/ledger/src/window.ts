@@ -21,7 +21,12 @@
  * landed.
  */
 
-import type { Address, Hex, LedgerEntry, SmallestUnits } from "@neuro-pay/types";
+import type {
+  Address,
+  Hex,
+  LedgerEntry,
+  SmallestUnits,
+} from "@neuro-pay/types";
 
 import type { LedgerStore } from "./store.js";
 
@@ -157,7 +162,8 @@ export async function computeWindowSpend(
     inputs.onChainCap,
     inputs.budgetMarginFraction,
   );
-  const remainingLocalBudget = localBudget > windowSpend ? localBudget - windowSpend : 0n;
+  const remainingLocalBudget =
+    localBudget > windowSpend ? localBudget - windowSpend : 0n;
   const remainingOnChainCap =
     inputs.onChainCap > windowSpend ? inputs.onChainCap - windowSpend : 0n;
 

@@ -96,9 +96,18 @@ describe("three metering dimensions", () => {
   });
 
   it("treats zero in any dimension as a no-op", () => {
-    const zeroSheet: PriceSheet = { ...PRICE_SHEET, perCall: 0n, perSecond: 0n, perUnit: 0n };
+    const zeroSheet: PriceSheet = {
+      ...PRICE_SHEET,
+      perCall: 0n,
+      perSecond: 0n,
+      perUnit: 0n,
+    };
     const start = createMeterState();
-    const after = accrueCalls(accrueSeconds(accrueUnits(start, zeroSheet, 100), zeroSheet, 5000), zeroSheet, 5);
+    const after = accrueCalls(
+      accrueSeconds(accrueUnits(start, zeroSheet, 100), zeroSheet, 5000),
+      zeroSheet,
+      5,
+    );
 
     expect(after.accruedUnpaid).toBe(0n);
     expect(after.totalAccrued).toBe(0n);

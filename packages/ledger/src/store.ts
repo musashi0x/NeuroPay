@@ -39,12 +39,14 @@ import type {
   LedgerEventType,
   PaymentFailureClassification,
 } from "@neuro-pay/types";
-import type { Address, Hex, IsoTimestamp, SmallestUnits } from "@neuro-pay/types";
+import type {
+  Address,
+  Hex,
+  IsoTimestamp,
+  SmallestUnits,
+} from "@neuro-pay/types";
 
-import {
-  assertNoKeyMaterial,
-  KeyMaterialRejectedError,
-} from "./secrets.js";
+import { assertNoKeyMaterial, KeyMaterialRejectedError } from "./secrets.js";
 
 /**
  * Wire columns of a ledger row on disk. Kept in one place so every SQL
@@ -80,10 +82,7 @@ type LedgerRow = {
  * The caller does not provide `sequence`, `timestamp`, or `id`; those come
  * from the store itself, which is what guarantees the append-only contract.
  */
-export type AppendInput = Omit<
-  LedgerEntry,
-  "id" | "sequence" | "timestamp"
-> & {
+export type AppendInput = Omit<LedgerEntry, "id" | "sequence" | "timestamp"> & {
   /**
    * Override for the timestamp. Defaults to the wall clock at append time;
    * tests inject a fixed instant to produce a deterministic ledger.
@@ -407,7 +406,9 @@ function validateAppendInput(input: AppendInput): void {
     throw new TypeError("streamId must be a string or null");
   }
   if (input.sessionPublicKey !== null && !isHex(input.sessionPublicKey)) {
-    throw new TypeError("sessionPublicKey must be a 0x-prefixed hex string or null");
+    throw new TypeError(
+      "sessionPublicKey must be a 0x-prefixed hex string or null",
+    );
   }
   if (!isHex(input.token)) {
     throw new TypeError("token must be a 0x-prefixed hex address");
@@ -423,13 +424,18 @@ function validateAppendInput(input: AppendInput): void {
   }
   if (input.transactionHash !== null && input.transactionHash !== undefined) {
     if (!isHex(input.transactionHash)) {
-      throw new TypeError("transactionHash must be a 0x-prefixed hex string or null");
+      throw new TypeError(
+        "transactionHash must be a 0x-prefixed hex string or null",
+      );
     }
     // The hash is exactly 32 bytes when a settlement has been submitted;
     // an early-stage entry may carry a zero-length `0x` placeholder or
     // be null. We accept anything that is `0x`-prefixed so partial
     // events do not require a second event type to clear this check.
-    if (input.transactionHash.length !== 2 && input.transactionHash.length !== 66) {
+    if (
+      input.transactionHash.length !== 2 &&
+      input.transactionHash.length !== 66
+    ) {
       throw new TypeError(
         "transactionHash must be either `0x` (unspecified) or `0x` + 64 hex (32-byte hash)",
       );

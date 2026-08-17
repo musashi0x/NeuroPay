@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { loadAppConfig } from "./config/config.js";
+import type { EnvSource } from "./config/env.js";
 import { deriveSpendLimit, SpendLimitError } from "./spend.js";
 
 describe("deriveSpendLimit — spec scenario", () => {
@@ -88,5 +90,32 @@ describe("deriveSpendLimit — input validation", () => {
   it("accepts the boundary decimal counts 0 and 36", () => {
     expect(deriveSpendLimit(1n, 0)).toBe(1n);
     expect(deriveSpendLimit(1n, 36)).toBe(10n ** 36n);
+  });
+});
+
+describe("loadAppConfig.spendCap ↔ grant boundary (no double-multiply)", () => {
+  // After the conversion landed at the config layer, the production path
+  // (loadAppConfig → grantSession) must hand the smallest-unit value
+  // straight to the SDK. If anyone re-introduces `deriveSpendLimit` at the
+  // grant boundary, the cap doubles by 10^decimals and silently becomes a
+  // policy hole.
+  const env18: EnvSource = {
+    RPC_URL: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+    TOKEN_ADDRESS: "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd",
+    TOKEN_DECIMALS: "18",
+    PAY_TO: "0x000000000000000000000000000000000000dEaD",
+    SETTLER_PRIVATE_KEY:
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    SESSION_SPEND_CAP: "50",
+    SETTLEMENT_THRESHOLD: "50000000000000000",
+  };
+  const env6: EnvSource = { ...env18, TOKEN_DECIMALS: "6" };
+
+  it("50 USDC × 18 decimals from config lands as 50n * 10n**18n", () => {
+    expect(loadAppConfig(env18).session.spendCap).toBe(50n * 10n ** 18n);
+  });
+
+  it("50 USDC × 6 decimals from config lands as 50_000_000n (no double-multiply at boundary)", () => {
+    expect(loadAppConfig(env6).session.spendCap).toBe(50_000_000n);
   });
 });

@@ -40,10 +40,7 @@ import { provisionWallet } from "../src/wallet.js";
 import { SessionStore } from "../src/session/store.js";
 import { grantSession } from "../src/session/grant.js";
 import { provisionRail } from "../src/rail.js";
-import {
-  PERMIT2_ADDRESS,
-  type CallPermission,
-} from "@altananetwork/sdk";
+import { PERMIT2_ADDRESS, type CallPermission } from "@altananetwork/sdk";
 import type { Address, Hex } from "@neuro-pay/types";
 
 /**
@@ -72,9 +69,7 @@ function parseAllowlist(envValue: string | undefined): CallPermission[] {
   try {
     parsed = JSON.parse(envValue);
   } catch (err) {
-    throw new Error(
-      `ALLOWLIST is not valid JSON: ${(err as Error).message}`,
-    );
+    throw new Error(`ALLOWLIST is not valid JSON: ${(err as Error).message}`);
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error(
@@ -84,7 +79,10 @@ function parseAllowlist(envValue: string | undefined): CallPermission[] {
   return parsed as CallPermission[];
 }
 
-function asCallPermission(p: CallPermission): { signature: string; to?: Address } {
+function asCallPermission(p: CallPermission): {
+  signature: string;
+  to?: Address;
+} {
   // The SDK's CallPermission is a tagged union; we project it onto
   // the persisted shape the grant path expects.
   if ("to" in p && p.to !== undefined) {
@@ -106,7 +104,9 @@ async function main(): Promise<void> {
     );
   }
   const adminPrivateKey: Hex = config.secrets.adminPrivateKey;
-  const allowlist = parseAllowlist(process.env["ALLOWLIST"]).map(asCallPermission);
+  const allowlist = parseAllowlist(process.env["ALLOWLIST"]).map(
+    asCallPermission,
+  );
 
   // 2. Build the Altana client. Token decimals are asserted against
   // the contract; a mismatch is a fatal startup error.
@@ -132,7 +132,9 @@ async function main(): Promise<void> {
     calls: allowlist,
   });
   const grantTx = result.persisted.grantTransactionHash;
-  console.log(`Grant transaction: ${grantTx ?? "(pending — relay did not surface a hash)"}`);
+  console.log(
+    `Grant transaction: ${grantTx ?? "(pending — relay did not surface a hash)"}`,
+  );
   console.log(`Session expiry: ${result.persisted.expiry}`);
   console.log(`Session public key: ${result.persisted.publicKey}`);
 
@@ -145,8 +147,12 @@ async function main(): Promise<void> {
     token: config.chain.token,
   });
   console.log(`Permit2 address: ${rail.permit2Address}`);
-  console.log(`Approve token tx: ${rail.approveTokenTransactionHash ?? "(pending)"}`);
-  console.log(`Approve checker tx: ${rail.approveCheckerTransactionHash ?? "(pending)"}`);
+  console.log(
+    `Approve token tx: ${rail.approveTokenTransactionHash ?? "(pending)"}`,
+  );
+  console.log(
+    `Approve checker tx: ${rail.approveCheckerTransactionHash ?? "(pending)"}`,
+  );
 
   console.log("");
   console.log("Provisioning complete. The session is now ready for payments.");

@@ -36,7 +36,7 @@ Rationale:
   Node 22+ built-in and the CI already pins Node 22.
 - **Synchronous, in-process, single-writer.** The agent process is one
   writer. The console (Group 7) reads from a separate request and
-  benefits from WAL's concurrent-read semantics, but the *write* path
+  benefits from WAL's concurrent-read semantics, but the _write_ path
   is single-threaded and the synchronous API matches that.
 - **SQL persistence means durability is free.** Group 9 runs the loop
   against chain 97, restarts the API between runs, and expects to find
@@ -59,17 +59,39 @@ loss.
 ```ts
 // Open.
 import { openLedgerStore } from "@neuro-pay/ledger";
-const store = await openLedgerStore({ storagePath: "/var/lib/neuro-pay/payments.ledger.db" });
+const store = await openLedgerStore({
+  storagePath: "/var/lib/neuro-pay/payments.ledger.db",
+});
 
 // Write.
-import { recordPaymentDemanded, recordSettlementConfirmed } from "@neuro-pay/ledger";
+import {
+  recordPaymentDemanded,
+  recordSettlementConfirmed,
+} from "@neuro-pay/ledger";
 await recordPaymentDemanded({ store, ctx, amount: 1000n, nonce: "0x01" });
-await recordSettlementConfirmed({ store, ctx, amount: 1000n, nonce: "0x01", transactionHash: "0x…" });
+await recordSettlementConfirmed({
+  store,
+  ctx,
+  amount: 1000n,
+  nonce: "0x01",
+  transactionHash: "0x…",
+});
 
 // Read.
-import { lookupByNonce, computeWindowSpend, computeUnsettledExposure } from "@neuro-pay/ledger";
+import {
+  lookupByNonce,
+  computeWindowSpend,
+  computeUnsettledExposure,
+} from "@neuro-pay/ledger";
 const life = await lookupByNonce(store, "0x01");
-const spend = await computeWindowSpend(store, { sessionPublicKey, token, onChainCap: 10n ** 24n, budgetMarginFraction: 8n * 10n ** 17n, nowMs: Date.now(), periodMs: 86_400_000 });
+const spend = await computeWindowSpend(store, {
+  sessionPublicKey,
+  token,
+  onChainCap: 10n ** 24n,
+  budgetMarginFraction: 8n * 10n ** 17n,
+  nowMs: Date.now(),
+  periodMs: 86_400_000,
+});
 const exposure = await computeUnsettledExposure(store);
 ```
 
@@ -94,5 +116,5 @@ the original. The aggregations (`computeWindowSpend`,
 `computeUnsettledExposure`) resolve every family of entries that share a
 logical id (the corrected entry's `correctsEntryId ?? id`) to the
 highest-sequence member, so a correction shadows the original without
-overwriting it. `lookupByNonce` returns the *raw* entries, so an auditor
+overwriting it. `lookupByNonce` returns the _raw_ entries, so an auditor
 sees both the original and the correction side by side.

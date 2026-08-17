@@ -64,9 +64,7 @@ const LABELLED_SECRET_BARE =
 
 /** Which heuristic a value tripped, for an error message a human can act on. */
 export type KeyMaterialShape =
-  | "private-key-hex"
-  | "mnemonic"
-  | "labelled-secret";
+  "private-key-hex" | "mnemonic" | "labelled-secret";
 
 /**
  * Report which key-material heuristic `value` trips, or null if it trips none.

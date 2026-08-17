@@ -72,9 +72,9 @@ describe("initializeBudget", () => {
     expect(state.exhausted).toBe(false);
     expect(state.periodSeconds).toBe(86_400);
     // Window end is exactly one period after window start.
-    expect(
-      Date.parse(state.windowEnd) - Date.parse(state.windowStart),
-    ).toBe(86_400_000);
+    expect(Date.parse(state.windowEnd) - Date.parse(state.windowStart)).toBe(
+      86_400_000,
+    );
   });
 
   it("refuses a non-positive period", () => {
@@ -240,7 +240,10 @@ describe("budget window rolls", () => {
       exhausted: false,
     };
 
-    const rolled = rollBudgetWindow(state, Date.parse("2026-01-01T12:00:00.000Z"));
+    const rolled = rollBudgetWindow(
+      state,
+      Date.parse("2026-01-01T12:00:00.000Z"),
+    );
     expect(rolled.spent).toBe(25n);
     expect(rolled.windowStart).toBe(state.windowStart);
     expect(rolled.windowEnd).toBe(state.windowEnd);
@@ -295,9 +298,7 @@ describe("budget window rolls", () => {
     expect(state.exhausted).toBe(true);
 
     // The next payment refuses before the roll.
-    expect(
-      preSignCheck({ state, amount: 1n }).ok,
-    ).toBe(false);
+    expect(preSignCheck({ state, amount: 1n }).ok).toBe(false);
 
     // Cross the window boundary, read fresh state, and try again.
     const t1 = Date.parse("2026-01-02T00:00:00.500Z");
@@ -305,9 +306,7 @@ describe("budget window rolls", () => {
 
     expect(rolled.spent).toBe(0n);
     expect(rolled.localRemaining).toBe(40n);
-    expect(
-      preSignCheck({ state: rolled, amount: 20n }),
-    ).toEqual({ ok: true });
+    expect(preSignCheck({ state: rolled, amount: 20n })).toEqual({ ok: true });
   });
 
   it("is idempotent at the exact roll instant", () => {

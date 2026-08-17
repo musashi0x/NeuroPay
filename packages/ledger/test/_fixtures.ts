@@ -50,10 +50,8 @@ export function newLedger(
   }) as LedgerStore & { __clockMs: () => number };
 }
 
-export const SAMPLE_TOKEN = "0x" + "ab".repeat(20) as `0x${string}`;
-export const SAMPLE_SESSION_PUBKEY =
-  ("0x" + "11".repeat(48)) as `0x${string}`;
-export const SAMPLE_TX_HASH =
-  "0x" + "22".repeat(32) as `0x${string}`;
+export const SAMPLE_TOKEN = ("0x" + "ab".repeat(20)) as `0x${string}`;
+export const SAMPLE_SESSION_PUBKEY = ("0x" + "11".repeat(48)) as `0x${string}`;
+export const SAMPLE_TX_HASH = ("0x" + "22".repeat(32)) as `0x${string}`;
 export const SAMPLE_CHAIN_ID = 97;
 export const SAMPLE_TOKEN_DECIMALS = 18;

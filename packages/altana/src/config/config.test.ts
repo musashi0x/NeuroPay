@@ -61,8 +61,11 @@ describe("loadAppConfig defaults", () => {
   it("reads amounts as exact bigints, not floats", () => {
     const config = loadAppConfig(MINIMAL_ENV);
 
-    // SESSION_SPEND_CAP is whole tokens; SETTLEMENT_THRESHOLD is smallest units.
-    expect(config.session.spendCap).toBe(10n);
+    // SESSION_SPEND_CAP enters as whole tokens but is converted to smallest
+    // units at the config layer (10 tokens × 10^18 = 10^19). Every downstream
+    // consumer (budget mirror, on-chain grant, console reporting) sees the
+    // smallest-unit value. SETTLEMENT_THRESHOLD is already smallest units.
+    expect(config.session.spendCap).toBe(10n * 10n ** 18n);
     expect(config.metering.settlementThreshold).toBe(50_000_000_000_000_000n);
   });
 
@@ -157,7 +160,7 @@ describe("loadAppConfig malformed values", () => {
     }
   });
 
-  it("accepts a fractional whole-token count (e.g. \"10.5\")", () => {
+  it('accepts a fractional whole-token count (e.g. "10.5")', () => {
     expect(() =>
       loadAppConfig(envWith({ SESSION_SPEND_CAP: "10" })),
     ).not.toThrow();

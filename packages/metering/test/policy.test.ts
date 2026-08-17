@@ -138,12 +138,14 @@ describe("threshold-or-tick policy", () => {
     // Re-accrue below threshold after settle.
     const reAccrued = accrueCalls(settled, SHEET, 3); // 300
 
-    expect(
-      evaluatePolicy(reAccrued, CONFIG, clockAt(30_000)),
-    ).toEqual({ demand: 0n, reason: "below-threshold" });
-    expect(
-      evaluatePolicy(reAccrued, CONFIG, clockAt(61_000)),
-    ).toEqual({ demand: 300n, reason: "tick" });
+    expect(evaluatePolicy(reAccrued, CONFIG, clockAt(30_000))).toEqual({
+      demand: 0n,
+      reason: "below-threshold",
+    });
+    expect(evaluatePolicy(reAccrued, CONFIG, clockAt(61_000))).toEqual({
+      demand: 300n,
+      reason: "tick",
+    });
   });
 
   it("combines per-second with the threshold: 100 units/sec × 11 s = 1100", () => {
@@ -192,7 +194,11 @@ describe("policy determinism and clock injection", () => {
   it("rejects negative thresholds", () => {
     const start = createMeterState();
     expect(() =>
-      evaluatePolicy(start, { ...CONFIG, settlementThreshold: -1n }, clockAt(0)),
+      evaluatePolicy(
+        start,
+        { ...CONFIG, settlementThreshold: -1n },
+        clockAt(0),
+      ),
     ).toThrow(RangeError);
   });
 });

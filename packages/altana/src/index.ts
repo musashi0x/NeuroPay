@@ -49,11 +49,20 @@ export type { WalletProvisionResult } from "./wallet.js";
 export { deriveSpendLimit, SpendLimitError } from "./spend.js";
 
 // Session codec.
-export { CodecError, decode, decodeAndVerify, encode } from "./session/codec.js";
+export {
+  CodecError,
+  decode,
+  decodeAndVerify,
+  encode,
+} from "./session/codec.js";
 export type { EncodedBigint } from "./session/codec.js";
 
 // Session persistence.
-export { SessionStore, SessionStoreError, NO_SIGNER_SOURCE } from "./session/store.js";
+export {
+  SessionStore,
+  SessionStoreError,
+  NO_SIGNER_SOURCE,
+} from "./session/store.js";
 export type {
   ResolvedSession,
   SessionStoreOptions,
@@ -70,10 +79,7 @@ export type {
 export { grantSession, GrantError } from "./session/grant.js";
 
 // Session authority.
-export {
-  checkSessionAuthority,
-  deriveKeyId,
-} from "./session/authority.js";
+export { checkSessionAuthority, deriveKeyId } from "./session/authority.js";
 export type {
   AuthorityCheckInput,
   AuthorityResult,
@@ -94,7 +100,4 @@ export {
   Permit2NotDeployedError,
   provisionRail,
 } from "./rail.js";
-export type {
-  ProvisionRailInput,
-  ProvisionRailResult,
-} from "./rail.js";
+export type { ProvisionRailInput, ProvisionRailResult } from "./rail.js";

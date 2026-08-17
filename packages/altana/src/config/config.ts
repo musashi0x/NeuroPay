@@ -80,23 +80,44 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
       // only to create the wallet, grant, provision the rail, and revoke.
       adminPrivateKey: readOptionalPrivateKey(env, "ADMIN_PRIVATE_KEY"),
     },
-    session: {
-      lifetimeSeconds: readInteger(env, "SESSION_LIFETIME_SECONDS", {
+    session: (() => {
+      const lifetimeSeconds = readInteger(env, "SESSION_LIFETIME_SECONDS", {
         purpose: "session key lifetime, used to derive the absolute expiry",
         fallback: DEFAULT_SESSION_LIFETIME_SECONDS,
         min: 1,
-      }),
-      spendCap: readWholeTokens(env, "SESSION_SPEND_CAP", {
+      });
+      const spendPeriodSeconds = readInteger(
+        env,
+        "SESSION_SPEND_PERIOD_SECONDS",
+        {
+          purpose: "period the on-chain spend cap resets over",
+          fallback: DEFAULT_SESSION_SPEND_PERIOD_SECONDS,
+          min: 1,
+        },
+      );
+      const tokenDecimals = readInteger(env, "TOKEN_DECIMALS", {
         purpose:
-          "per-period spend cap in whole tokens; multiplied by 10^TOKEN_DECIMALS at grant time",
+          "decimals of TOKEN_ADDRESS, asserted against the contract at startup",
+        min: 0,
+        max: 36,
+      });
+      // The operator-facing env var is whole-tokens ("10" or "0.5") for
+      // ergonomics — the decimals hazard is exactly the bug we want the
+      // config layer to absorb. Convert to smallest-units here so every
+      // downstream consumer (budget mirror, on-chain grant, console
+      // reporting) sees the same scale as the chain.
+      const spendCapWhole = readWholeTokens(env, "SESSION_SPEND_CAP", {
+        purpose:
+          'per-period spend cap in whole tokens (e.g. "50" or "0.5"); converted to smallest units at config time',
         min: 0n,
-      }),
-      spendPeriodSeconds: readInteger(env, "SESSION_SPEND_PERIOD_SECONDS", {
-        purpose: "period the on-chain spend cap resets over",
-        fallback: DEFAULT_SESSION_SPEND_PERIOD_SECONDS,
-        min: 1,
-      }),
-    },
+      });
+      const spendCap = spendCapWhole * 10n ** BigInt(tokenDecimals);
+      return {
+        lifetimeSeconds,
+        spendCap,
+        spendPeriodSeconds,
+      };
+    })(),
     metering: {
       budgetMargin: readFraction(env, "BUDGET_MARGIN", {
         purpose: "fraction of the on-chain cap held back as local headroom",

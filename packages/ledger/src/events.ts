@@ -262,7 +262,9 @@ export async function recordSessionGranted(
     detail: input.detail ?? null,
   };
   return input.store.append(
-    input.timestamp === undefined ? base : { ...base, timestamp: input.timestamp },
+    input.timestamp === undefined
+      ? base
+      : { ...base, timestamp: input.timestamp },
   );
 }
 
@@ -287,7 +289,9 @@ export async function recordSessionRevoked(
     detail,
   };
   return input.store.append(
-    input.timestamp === undefined ? base : { ...base, timestamp: input.timestamp },
+    input.timestamp === undefined
+      ? base
+      : { ...base, timestamp: input.timestamp },
   );
 }
 
@@ -471,7 +475,8 @@ export async function recordCorrection(
     chainId: correctionOf.chainId,
     token: correctionOf.token,
     tokenDecimals: correctionOf.tokenDecimals,
-    amount: overrides.amount === undefined ? correctionOf.amount : overrides.amount,
+    amount:
+      overrides.amount === undefined ? correctionOf.amount : overrides.amount,
     nonce: correctionOf.nonce,
     transactionHash:
       overrides.transactionHash === undefined

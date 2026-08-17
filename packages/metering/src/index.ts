@@ -42,10 +42,7 @@ export type {
 export { compareToExpected, computeExpectedCost } from "./expected.js";
 export type { ObservedConsumption, ToleranceCheckResult } from "./expected.js";
 
-export {
-  checkApproachingExpiry,
-  checkStreamOpenFitsExpiry,
-} from "./expiry.js";
+export { checkApproachingExpiry, checkStreamOpenFitsExpiry } from "./expiry.js";
 export type {
   DurationSeconds,
   ExpiryWarning,
