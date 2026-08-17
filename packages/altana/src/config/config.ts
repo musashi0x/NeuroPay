@@ -7,6 +7,7 @@ import {
   readPrivateKey,
   readSmallestUnits,
   readUrl,
+  readWholeTokens,
   type EnvSource,
 } from "./env.js";
 
@@ -85,8 +86,10 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
         fallback: DEFAULT_SESSION_LIFETIME_SECONDS,
         min: 1,
       }),
-      spendCap: readSmallestUnits(env, "SESSION_SPEND_CAP", {
-        purpose: "on-chain spend limit per period, in smallest token units",
+      spendCap: readWholeTokens(env, "SESSION_SPEND_CAP", {
+        purpose:
+          "per-period spend cap in whole tokens; multiplied by 10^TOKEN_DECIMALS at grant time",
+        min: 0n,
       }),
       spendPeriodSeconds: readInteger(env, "SESSION_SPEND_PERIOD_SECONDS", {
         purpose: "period the on-chain spend cap resets over",

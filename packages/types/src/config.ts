@@ -47,8 +47,18 @@ export type SecretsConfig = {
 export type SessionConfig = {
   /** Session lifetime in seconds, used to derive the absolute `expiry`. */
   lifetimeSeconds: number;
-  /** On-chain `spend.limit` per `spendPeriodSeconds`, in smallest units. */
-  spendCap: SmallestUnits;
+  /**
+   * Per-period spend cap as a whole-token count. The grant path multiplies
+   * by `10n ** tokenDecimals` to derive the on-chain smallest-unit limit;
+   * the multiplication lives in `@neuro-pay/altana`'s `deriveSpendLimit` and
+   * is exercised by the codec / spend-decimal tests.
+   *
+   * Storing whole tokens (not smallest units) here is the spec's
+   * "policy of 50 USDC per day is configured on a chain where the token
+   * has 18 decimals" — `50n * 10n ** 18n` is computed from this value and
+   * `tokenDecimals`, never a literal in the grant code.
+   */
+  spendCap: bigint;
   /** The `period` the on-chain cap resets over; the budget window aligns to it. */
   spendPeriodSeconds: number;
 };

@@ -23,7 +23,7 @@ const MINIMAL_ENV: EnvSource = {
   TOKEN_DECIMALS: "18",
   PAY_TO: "0x000000000000000000000000000000000000dEaD",
   SETTLER_PRIVATE_KEY: SETTLER_KEY,
-  SESSION_SPEND_CAP: "10000000000000000000",
+  SESSION_SPEND_CAP: "10",
   SETTLEMENT_THRESHOLD: "50000000000000000",
 };
 
@@ -61,7 +61,8 @@ describe("loadAppConfig defaults", () => {
   it("reads amounts as exact bigints, not floats", () => {
     const config = loadAppConfig(MINIMAL_ENV);
 
-    expect(config.session.spendCap).toBe(10_000_000_000_000_000_000n);
+    // SESSION_SPEND_CAP is whole tokens; SETTLEMENT_THRESHOLD is smallest units.
+    expect(config.session.spendCap).toBe(10n);
     expect(config.metering.settlementThreshold).toBe(50_000_000_000_000_000n);
   });
 
@@ -134,8 +135,10 @@ describe("loadAppConfig malformed values", () => {
     ["TOKEN_DECIMALS", "18.0"],
     ["PAY_TO", "not-an-address"],
     ["CHAIN_ID", "0"],
-    ["SESSION_SPEND_CAP", "10.5"],
-    ["SESSION_SPEND_CAP", "0"],
+    ["SESSION_SPEND_CAP", "-10"],
+    ["SESSION_SPEND_CAP", "10.5.5"],
+    ["SESSION_SPEND_CAP", "+10"],
+    ["SESSION_SPEND_CAP", "1e3"],
     ["SETTLEMENT_THRESHOLD", "-1"],
     ["BUDGET_MARGIN", "1"],
     ["BUDGET_MARGIN", "-0.1"],
@@ -154,12 +157,16 @@ describe("loadAppConfig malformed values", () => {
     }
   });
 
-  it("rejects a decimal amount, which is the decimals hazard in disguise", () => {
+  it("accepts a fractional whole-token count (e.g. \"10.5\")", () => {
     expect(() =>
       loadAppConfig(envWith({ SESSION_SPEND_CAP: "10" })),
     ).not.toThrow();
     expect(() =>
-      loadAppConfig(envWith({ SESSION_SPEND_CAP: "10.000000" })),
+      loadAppConfig(envWith({ SESSION_SPEND_CAP: "10.5" })),
+    ).not.toThrow();
+    // The decimals hazard still applies to smallest-unit amounts.
+    expect(() =>
+      loadAppConfig(envWith({ SETTLEMENT_THRESHOLD: "10.000000" })),
     ).toThrowError(InvalidConfigError);
   });
 });
