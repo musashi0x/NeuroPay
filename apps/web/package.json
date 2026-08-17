@@ -9,7 +9,9 @@
     "start": "next start --port 3000",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "panels": "node scripts/gen-panels.mjs"
+    "panels": "node scripts/gen-panels.mjs",
+    "check:no-server": "node scripts/check-no-server-imports.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@neuro-pay/carousel": "workspace:*",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^19.2.4",
     "eslint": "catalog:",
     "tailwindcss": "^4.3.3",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

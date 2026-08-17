@@ -101,3 +101,40 @@ export {
   provisionRail,
 } from "./rail.js";
 export type { ProvisionRailInput, ProvisionRailResult } from "./rail.js";
+
+// x402 payment client.
+export {
+  fetchWithX402,
+  normalizePaymentRequired,
+  parsePaymentRequired,
+} from "./payment/request.js";
+export type {
+  FetchWithX402Options,
+  FetchWithX402Result,
+} from "./payment/request.js";
+export {
+  selectX402Requirement,
+  normalizeRequirement,
+} from "./payment/select.js";
+export { signX402PaymentFor } from "./payment/sign.js";
+export type {
+  SignForRequirementInput,
+  SignForRequirementResult,
+} from "./payment/sign.js";
+export {
+  encodeB402Envelope,
+  base64JsonEncode,
+  base64JsonDecode,
+} from "./payment/encode.js";
+export type { B402Envelope, EncodeB402Input } from "./payment/encode.js";
+export { policyCheck } from "./payment/policy.js";
+export type { PolicyCheckInput } from "./payment/policy.js";
+export { buildPaymentContext } from "./payment/context.js";
+export type { PaymentClientContext } from "./payment/context.js";
+export {
+  PaymentFailureError,
+  isBuyerPaymentFailure,
+  isPaymentClientClassification,
+  looksLikeEoaOnlyFacilitator,
+} from "./payment/errors.js";
+export type { BuyerPaymentFailure } from "./payment/errors.js";

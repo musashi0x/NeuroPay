@@ -136,12 +136,18 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@22.20.1)(vite@8.2.1(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12))
 
   packages/altana:
     dependencies:
       '@altananetwork/sdk':
         specifier: 'catalog:'
         version: 0.7.1(@types/react@19.2.18)(@wagmi/core@3.6.4(@types/react@19.2.18)(react@19.2.8)(typescript@5.9.3)(viem@2.55.17(typescript@5.9.3)(zod@4.4.3)))(react@19.2.8)(typescript@5.9.3)(zod@4.4.3)
+      '@neuro-pay/metering':
+        specifier: workspace:*
+        version: link:../metering
       '@neuro-pay/types':
         specifier: workspace:*
         version: link:../types
