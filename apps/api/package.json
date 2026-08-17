@@ -13,9 +13,13 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@neuro-pay/altana": "workspace:*",
+    "@neuro-pay/ledger": "workspace:*",
     "@neuro-pay/logger": "workspace:*",
+    "@neuro-pay/metering": "workspace:*",
     "@neuro-pay/types": "workspace:*",
-    "hono": "^4.13.2"
+    "hono": "^4.13.2",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@neuro-pay/eslint-config": "workspace:*",
