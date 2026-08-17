@@ -15,9 +15,5 @@
 body {
   background: var(--paper);
   color: var(--ink);
-  font-family:
-    "IBM Plex Sans",
-    "Source Sans 3",
-    "Segoe UI",
-    sans-serif;
+  font-family: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
 }
