@@ -55,7 +55,31 @@ Turbo still builds workspace dependencies such as `@neuro-pay/types` via `^build
 ```
 apps/web             Next.js App Router frontend
 apps/api             Hono TypeScript HTTP API
+packages/logger      Shared pino logger (structured JSON in prod, pretty in dev)
 packages/tsconfig    Shared TypeScript configs
 packages/eslint-config
 packages/types       Shared public types (HealthResponse, …)
+```
+
+## Logging & observability
+
+The API uses [`pino`](https://getpino.io) via the shared `@neuro-pay/logger` package.
+
+- **Format**: JSON in production (`NODE_ENV=production`), pretty-printed in development.
+- **Level**: `LOG_LEVEL` (default: `info` in prod, `debug` in dev).
+- **Per-request id**: every request gets an `x-request-id` header (inherited from the upstream if present, otherwise a v4 UUID). The id is echoed back on the response and attached to every log line for that request.
+- **Request log**: one structured line per request with `method`, `path`, `status`, `durationMs`, and `requestId`.
+- **Errors**: every thrown error is logged with the stack and returns a structured JSON error body that includes the `requestId` so support can correlate user reports with server logs.
+- **Redaction**: `authorization`, `cookie`, `set-cookie`, `password`, `token`, and `secret` fields are redacted from log output.
+
+To watch the API logs in dev:
+
+```bash
+pnpm --filter @neuro-pay/api dev
+```
+
+To override the log level:
+
+```bash
+LOG_LEVEL=debug pnpm --filter @neuro-pay/api dev
 ```

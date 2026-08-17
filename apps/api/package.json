@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@neuro-pay/logger": "workspace:*",
     "@neuro-pay/types": "workspace:*",
     "hono": "^4.13.2"
   },
@@ -21,6 +22,7 @@
     "@neuro-pay/tsconfig": "workspace:*",
     "@types/node": "^22.18.12",
     "eslint": "catalog:",
+    "pino-pretty": "^11.3.0",
     "tsx": "^4.23.12",
     "typescript": "catalog:",
     "vitest": "catalog:"
