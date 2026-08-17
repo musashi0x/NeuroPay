@@ -143,6 +143,8 @@ export type StreamStore = {
    * tell "404 the segment" from "404 not your stream".
    */
   get(streamId: string): StreamRecord | null;
+  /** Snapshot of every known stream, including ended ones. */
+  list(): StreamRecord[];
   /** End a stream with a reason. Idempotent: a second call is a no-op. */
   end(streamId: string, reason: StreamEndReason): StreamRecord | null;
   /** Increment the segment counter for `streamId` and return the new value. */
@@ -207,6 +209,9 @@ export function createStreamStore(
     },
     get(streamId) {
       return records.get(streamId) ?? null;
+    },
+    list() {
+      return [...records.values()];
     },
     end(streamId, reason) {
       const record = records.get(streamId);

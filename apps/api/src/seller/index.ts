@@ -155,6 +155,21 @@ export type Seller = {
   };
   /** Drain all pending settlements. */
   drainSettlements(): Promise<void>;
+  /** Console inspection: every known stream without the producer callback. */
+  inspectStreams(): StreamInspection[];
+  /** End every active stream. Used by the kill switch. */
+  endAll(reason: StreamEndReason): string[];
+};
+
+/** Public stream snapshot — no producer, no private state. */
+export type StreamInspection = {
+  id: string;
+  priceSheet: PriceSheet;
+  payTo: Address;
+  openedAt: IsoTimestamp;
+  expiresAt: IsoTimestamp;
+  endReason: StreamEndReason | null;
+  meter: import("@neuro-pay/metering").MeterState;
 };
 
 /**
@@ -557,6 +572,28 @@ export function createSeller(input: CreateSellerInput): Seller {
 
     async drainSettlements() {
       await queue.drain();
+    },
+
+    inspectStreams() {
+      return streams.list().map((record) => ({
+        id: record.id,
+        priceSheet: record.priceSheet,
+        payTo: record.payTo,
+        openedAt: record.openedAt,
+        expiresAt: record.expiresAt,
+        endReason: record.endReason,
+        meter: record.meter,
+      }));
+    },
+
+    endAll(reason) {
+      const ended: string[] = [];
+      for (const record of streams.list()) {
+        if (record.endReason !== null) continue;
+        streams.end(record.id, reason);
+        ended.push(record.id);
+      }
+      return ended;
     },
   };
 

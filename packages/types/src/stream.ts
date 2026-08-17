@@ -61,3 +61,24 @@ export type SegmentResponse = {
   streamEnded: boolean;
   endReason: StreamEndReason | null;
 };
+
+/**
+ * Console view of one stream. Amounts stay `bigint`; the HTTP boundary
+ * stringifies them. `segmentProducer` never appears here.
+ */
+export type StreamView = {
+  streamId: string;
+  status: "active" | "ended";
+  endReason: StreamEndReason | null;
+  priceSheet: PriceSheet;
+  accruedUnpaid: SmallestUnits;
+  totalAccrued: SmallestUnits;
+  deliveredCalls: number;
+  deliveredSeconds: number;
+  deliveredUnits: number;
+  /** Seconds until the tick policy would fire; 0 if already due. */
+  secondsUntilNextTick: number;
+  inFlightSettlements: number;
+  openedAt: IsoTimestamp;
+  expiresAt: IsoTimestamp;
+};

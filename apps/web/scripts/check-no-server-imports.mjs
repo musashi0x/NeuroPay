@@ -23,7 +23,14 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SCAN_ROOT = join(HERE, "..", "src");
-const FORBIDDEN = [/@neuro-pay\/altana(?:\/|$)/, /packages\/altana\//];
+const FORBIDDEN = [
+  /@neuro-pay\/altana(?:\/|$)/,
+  /packages\/altana\//,
+  /SETTLER_PRIVATE_KEY/,
+  /ADMIN_PRIVATE_KEY/,
+  /privateKey\s*:/,
+  /0x[a-fA-F0-9]{64}/,
+];
 
 const FAILURES = [];
 
@@ -60,7 +67,7 @@ walk(SCAN_ROOT);
 
 if (FAILURES.length > 0) {
   console.error(
-    "apps/web must not import server-only @neuro-pay/altana. Offending imports:",
+    "apps/web must not import server-only payment code or key material. Offending lines:",
   );
   for (const f of FAILURES) {
     console.error(`  ${f.file}:${f.line}  ${f.text}`);

@@ -42,24 +42,69 @@ pnpm --filter @neuro-pay/api dev
 
 GitHub Actions runs on every push to `main` and every pull request. One job installs once, then checks each app and formatting:
 
-| Step     | What it runs                                                  |
-| -------- | ------------------------------------------------------------- |
-| Frontend | `turbo run lint typecheck test build --filter=@neuro-pay/web` |
-| Backend  | `turbo run lint typecheck test build --filter=@neuro-pay/api` |
-| Format   | `prettier --check .`                                          |
+| Step     | What it runs                                                                                                                  |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Frontend | `turbo run lint typecheck test build --filter=@neuro-pay/web`                                                                 |
+| Backend  | `turbo run lint typecheck test build --filter=@neuro-pay/api`                                                                 |
+| Packages | `turbo run lint typecheck test build` for `@neuro-pay/metering`, `@neuro-pay/altana`, `@neuro-pay/ledger`, `@neuro-pay/types` |
+| Format   | `prettier --check .`                                                                                                          |
 
 Turbo still builds workspace dependencies such as `@neuro-pay/types` via `^build`. Locally, `pnpm check` is the same quality gate (whole workspace + format).
 
 ## Layout
 
 ```
-apps/web             Next.js App Router frontend
-apps/api             Hono TypeScript HTTP API
+apps/web             Next.js App Router frontend + stream console at /console
+apps/api             Hono TypeScript HTTP API (seller, ledger, console API)
+packages/altana      Session lifecycle and x402 payment client (server-only)
+packages/metering    Threshold-or-tick policy (no chain, no network)
+packages/ledger      Append-only payment event store
 packages/logger      Shared pino logger (structured JSON in prod, pretty in dev)
 packages/tsconfig    Shared TypeScript configs
 packages/eslint-config
-packages/types       Shared public types (HealthResponse, …)
+packages/types       Shared wire types (price sheet, session, ledger, …)
 ```
+
+## x402 micropayment streaming (BNB Testnet, chain 97)
+
+The agent pays for metered work with an Altana session key. A human approves a policy once (spend cap, expiry, allowed contracts). Every subsequent 402 is signed server-side. The browser never receives a private key.
+
+### Operator checklist (chain 97)
+
+1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them.
+2. Set `RPC_URL`, `TOKEN_ADDRESS`, `TOKEN_DECIMALS`, `PAY_TO`, `SETTLER_PRIVATE_KEY`, and `ADMIN_PRIVATE_KEY`.
+3. `SESSION_SPEND_CAP` is **whole tokens**, not smallest units. `10` on an 18-decimal token becomes `10e18`. Writing `10000000000000000000` here would become `10e36`.
+4. `TOKEN_DECIMALS` is asserted against the token contract at client startup. USDT/USDC are 18 decimals on BNB and 6 on Ethereum. The wrong value makes every payment revert against a cap that looks generous.
+5. Fund the settler EOA with testnet BNB (gas). A drained settler is reported as its own alarm; verification still passes.
+6. Provision the wallet and session:
+
+   ```bash
+   pnpm --filter @neuro-pay/altana provision
+   ```
+
+   The script prints the smart-account address to fund and every transaction hash. Fund that address from the [BNB testnet faucet](https://www.bnbchain.org/en/testnet-faucet) **before** the grant if the wallet is new.
+
+7. `grantSession` writes to Keystore and costs a fee. The wallet's **first admin action is charged twice** because `initialRegisterKey` rides in the same userOp. Record both the funding hash and the grant hash; the double charge is expected.
+8. Session persistence is byte-exact. The store re-encodes on load and **hard-fails** on mismatch. Do not hand-edit `.data/session.json`. A sloppy JSON round-trip (bigint → number, reordered keys) grants cleanly and then fails every payment.
+9. Start the API and the console:
+
+   ```bash
+   pnpm dev
+   ```
+
+   Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
+
+### What is bounded, and what is not
+
+| Failure                     | Bound                                                                               | What is not guaranteed                                              |
+| --------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Buyer walks away mid-stream | Seller loss ≤ `SETTLEMENT_THRESHOLD × MAX_IN_FLIGHT_SETTLEMENTS` of unpaid delivery | Already-delivered segments whose settlement has not confirmed       |
+| Session key leaks           | Buyer loss ≤ on-chain `spend.limit` per period, until `expiry` or revoke            | Zero loss. The cap is the whole point and it is not zero.           |
+| Admin key leaks             | Unbounded — total loss of the wallet                                                | Anything. The admin key is not loaded by the running agent process. |
+| Kill switch, local stage    | Signing stops in milliseconds. No further envelopes.                                | The session is still valid on-chain until the second stage lands.   |
+| Kill switch, on-chain stage | Session is provably dead (`isValidKey` reads false).                                | If this stage returns `FAILED`, retry. Local revoke still holds.    |
+
+Do not collapse the two revoke stages into one status. The console reports them separately.
 
 ## Logging & observability
 

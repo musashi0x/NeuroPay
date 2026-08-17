@@ -2,65 +2,91 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { HealthResponse } from "@neuro-pay/types";
 import { requestId, httpLogger, getLog } from "./middleware.js";
+import { resolveCorsOrigin } from "./cors-origin.js";
+import { consoleRoutes, type ConsoleRouteDeps } from "./console/routes.js";
+import { openStreamRoute, type OpenStreamDeps } from "./routes/streams/open.js";
+import {
+  nextSegmentRoute,
+  type NextSegmentDeps,
+} from "./routes/streams/next.js";
 
-const corsOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
+export type AppDeps = {
+  console?: ConsoleRouteDeps["console"];
+  seller?: OpenStreamDeps["seller"] & NextSegmentDeps["seller"];
+  corsOrigin?: string;
+};
 
-export const app = new Hono();
-
-app.use("*", requestId());
-app.use("*", httpLogger());
-app.use(
-  "*",
-  cors({
-    origin: corsOrigin,
-    allowMethods: ["GET", "HEAD", "OPTIONS"],
-  }),
-);
-
-app.get("/health", (c) => {
-  const body: HealthResponse = {
-    status: "ok",
-    service: "api",
-    timestamp: new Date().toISOString(),
-  };
-
-  return c.json(body);
-});
-
-// Centralized error handler. Any thrown Response / Error reaches here so
-// logging is consistent and we never leak stack traces to clients.
-app.onError((err, c) => {
-  const log = getLog(c);
-  log.error(
-    {
-      err: { name: err.name, message: err.message, stack: err.stack },
-      method: c.req.method,
-      path: c.req.path,
-    },
-    "unhandled error",
+export function createApp(deps: AppDeps = {}): Hono {
+  const app = new Hono();
+  const corsOrigin = resolveCorsOrigin(
+    deps.corsOrigin ?? process.env.CORS_ORIGIN,
   );
 
-  return c.json(
-    {
-      error: {
-        message: "Internal Server Error",
-        requestId: c.get("requestId"),
+  app.use("*", requestId());
+  app.use("*", httpLogger());
+  app.use(
+    "*",
+    cors({
+      origin: corsOrigin,
+      allowMethods: ["GET", "HEAD", "OPTIONS", "POST"],
+      allowHeaders: ["Content-Type", "X-Request-Id"],
+    }),
+  );
+
+  app.get("/health", (c) => {
+    const body: HealthResponse = {
+      status: "ok",
+      service: "api",
+      timestamp: new Date().toISOString(),
+    };
+
+    return c.json(body);
+  });
+
+  if (deps.seller) {
+    app.route("/", openStreamRoute({ seller: deps.seller }));
+    app.route("/", nextSegmentRoute({ seller: deps.seller }));
+  }
+
+  if (deps.console) {
+    app.route("/", consoleRoutes({ console: deps.console }));
+  }
+
+  app.onError((err, c) => {
+    const log = getLog(c);
+    log.error(
+      {
+        err: { name: err.name, message: err.message, stack: err.stack },
+        method: c.req.method,
+        path: c.req.path,
       },
-    },
-    500,
-  );
-});
+      "unhandled error",
+    );
 
-// 404 fallback - httpLogger already emits the warn line for non-2xx
-// responses, so we only need to return a structured error body.
-app.notFound((c) => {
-  return c.json(
-    {
-      error: {
-        message: "Not Found",
-        requestId: c.get("requestId"),
+    return c.json(
+      {
+        error: {
+          message: "Internal Server Error",
+          requestId: c.get("requestId"),
+        },
       },
-    },
-    404,
-  );
-});
+      500,
+    );
+  });
+
+  app.notFound((c) => {
+    return c.json(
+      {
+        error: {
+          message: "Not Found",
+          requestId: c.get("requestId"),
+        },
+      },
+      404,
+    );
+  });
+
+  return app;
+}
+
+export const app = createApp();

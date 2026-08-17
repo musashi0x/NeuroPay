@@ -26,6 +26,7 @@ export type {
   SegmentResponse,
   StreamEndReason,
   StreamOpenResponse,
+  StreamView,
 } from "./stream.js";
 export type {
   X402Extra,
@@ -39,10 +40,12 @@ export type {
   PaymentFailureClassification,
 } from "./ledger.js";
 export type {
+  RevokeResult,
   SessionCallPermission,
   SessionPolicyView,
   SessionStatus,
 } from "./session.js";
+export type { ConsoleSnapshot } from "./console.js";
 export type { BudgetState } from "./budget.js";
 export type {
   AppConfig,
