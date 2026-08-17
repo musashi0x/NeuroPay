@@ -1,6 +1,11 @@
 # neuro-pay
 
-pnpm + Turborepo workspace for the neuro-pay web app and API.
+pnpm + Turborepo workspace for neuro-pay: the x402 metered-payment loop and the
+web front end that fronts it.
+
+Agents buy the services they need on BNB Chain. Each catalog listing carries a
+price per call; the gateway issues the `HTTP 402`, checks the request against the
+owner's grant, and settles in USDC before the call runs.
 
 ## Prerequisites
 
@@ -28,6 +33,7 @@ Run these from the repository root:
 | `pnpm test`      | Vitest across packages that ship tests                                                                                                                                     |
 | `pnpm check`     | Lint, typecheck, test, build, and format check (local CI gate)                                                                                                             |
 | `pnpm format`    | Prettier write across the workspace                                                                                                                                        |
+| `pnpm panels`    | Regenerate the landing-page card artwork (see [Landing page](#landing-page))                                                                                               |
 
 Turbo scripts use the interactive TUI. Switch task logs with the arrow keys; quit with `q` or `Ctrl+C`. Non-interactive terminals fall back to streamed logs (`TURBO_UI=false` or `--ui stream` forces that).
 
@@ -53,13 +59,61 @@ Turbo still builds workspace dependencies such as `@neuro-pay/types` via `^build
 ## Layout
 
 ```
-apps/web             Next.js App Router frontend
+apps/web             Next.js App Router frontend. `/` is the landing carousel,
+                     `/health` the API integration check.
 apps/api             Hono TypeScript HTTP API
+
+packages/altana      The Altana SDK boundary: chain config, client, wallet and
+                     session lifecycle, rail provisioning, x402 payment client.
+                     The only package allowed to import `@altananetwork/sdk` or
+                     `viem`, and server-side only — key material lives here and
+                     must never reach a browser bundle.
+packages/metering    The settlement policy: price sheet, threshold-or-tick
+                     meter, budget mirror. Deliberately chain-free —
+                     `src/boundary.test.ts` fails the build if a wallet, RPC or
+                     HTTP dependency is ever added — so rounding, window rolls
+                     and refusals are testable against a fake clock.
+packages/ledger      Append-only payment ledger. Owns the durable trail of
+                     every payment-relevant event, not chain reads or
+                     settlement.
+packages/carousel    The WebGL landing carousel engine (three.js + GSAP),
+                     framework-free. Vendored, MIT — see its README.
 packages/logger      Shared pino logger (structured JSON in prod, pretty in dev)
+packages/types       Shared public types (HealthResponse, …)
 packages/tsconfig    Shared TypeScript configs
 packages/eslint-config
-packages/types       Shared public types (HealthResponse, …)
 ```
+
+## Landing page
+
+`/` is a WebGL carousel that tells the payment flow as ten cards: catalog,
+discovery, unpaid request, `HTTP 402`, grant check, USDC settlement, execution,
+receipt, integration. Scroll or drag the row; click a card to focus it.
+
+- **Desktop only.** Below 1025px the page shows a holding screen and never boots
+  WebGL.
+- **It needs a visible window.** The carousel is driven by
+  `requestAnimationFrame`, so it does not advance in a backgrounded or hidden
+  tab — a screenshot of a hidden page shows a black canvas even though nothing
+  is wrong.
+- **Press `g`** for a live tuning panel, then copy the numbers you land on back
+  into `apps/web/src/carousel.config.ts`.
+
+Content and theme live in `apps/web/src/carousel.config.ts`, written as
+overrides on `@neuro-pay/carousel`'s upstream defaults so the file reads as a
+diff. The card artwork is generated rather than photographic — no third-party
+imagery in the repo, and no image toolchain to install. Card copy lives in
+`apps/web/scripts/gen-panels.mjs`; after editing it:
+
+```bash
+pnpm panels
+```
+
+That draws each card as SVG and rasterises it at 2× with headless Chrome. Set
+`CHROME_BIN` if Chrome isn't at the default macOS path. Cards render ~600px tall
+(`CONFIG.PANEL_H`) from a 1000px-tall source, so the generator's type scale is
+built around that ~0.6× reduction — if you change `PANEL_H`, re-check the small
+text on the cards, not just the layout.
 
 ## Logging & observability
 
