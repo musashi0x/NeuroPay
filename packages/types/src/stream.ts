@@ -1,0 +1,63 @@
+import type { Address, IsoTimestamp, SmallestUnits } from "./primitives.js";
+import type { PriceSheet } from "./pricing.js";
+
+/** Why a stream stopped delivering. A stream never resumes after ending. */
+export type StreamEndReason =
+  | "completed"
+  | "price-changed"
+  | "session-expired"
+  | "session-revoked"
+  | "budget-exhausted"
+  | "exposure-limit"
+  | "seller-error";
+
+/**
+ * The response to opening a stream (`POST /v1/streams`).
+ *
+ * Carries everything a buyer needs to run its own mirror meter and to size a
+ * payment without a second round trip: the pinned price sheet, the settlement
+ * token and its decimals, the chain, and the recipient bound into every
+ * payment witness.
+ */
+export type StreamOpenResponse = {
+  streamId: string;
+  /** Pinned at open; segments accrue against this sheet for the stream's life. */
+  priceSheet: PriceSheet;
+  chainId: number;
+  token: Address;
+  tokenDecimals: number;
+  /** The recipient bound into the Permit2 witness of every payment. */
+  payTo: Address;
+  openedAt: IsoTimestamp;
+  /** Hard stop for the stream, never later than the session expiry. */
+  expiresAt: IsoTimestamp;
+  /** Upper bound on seconds one segment may cover. */
+  maxSecondsPerSegment: number;
+  /** Upper bound on units one segment may deliver. */
+  maxUnitsPerSegment: number;
+};
+
+/**
+ * A delivered segment (`GET /v1/streams/:id/next` returning 200).
+ *
+ * A segment covers up to `maxSecondsPerSegment` seconds or
+ * `maxUnitsPerSegment` units, whichever ends first; the actual amounts
+ * delivered are reported here so the buyer's mirror meter accrues from
+ * observed consumption rather than from the seller's arithmetic.
+ */
+export type SegmentResponse = {
+  streamId: string;
+  /** Monotonic, gap-free index of this segment within the stream. */
+  sequence: number;
+  /** The delivered payload. */
+  data: string;
+  secondsDelivered: number;
+  unitsDelivered: number;
+  /** Cost accrued and not yet covered by a settled payment. */
+  accruedUnpaid: SmallestUnits;
+  /** Cost accrued over the stream's whole life, paid and unpaid. */
+  totalAccrued: SmallestUnits;
+  /** True when this is the last segment; `endReason` is then non-null. */
+  streamEnded: boolean;
+  endReason: StreamEndReason | null;
+};
