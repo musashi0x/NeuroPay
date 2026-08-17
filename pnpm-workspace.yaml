@@ -7,3 +7,5 @@ catalog:
   eslint: 9.39.5
   prettier: 3.9.6
   vitest: 4.1.10
+  "@altananetwork/sdk": 0.7.1
+  viem: 2.55.17
