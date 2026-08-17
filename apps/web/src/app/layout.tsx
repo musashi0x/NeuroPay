@@ -1,10 +1,15 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "neuro-pay",
-  description: "neuro-pay workspace",
+  title: "NeuroPay — Agents buy the services they need",
+  description:
+    "A catalog of paid APIs and the gateway that handles payment for them. Every listing carries a price per call: the gateway issues HTTP 402, checks the request against the owner's grant, and settles in USDC on BNB Chain before the call runs.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#05060A",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

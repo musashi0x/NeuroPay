@@ -8,13 +8,18 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "panels": "node scripts/gen-panels.mjs"
   },
   "dependencies": {
+    "@neuro-pay/carousel": "workspace:*",
     "@neuro-pay/types": "workspace:*",
+    "gsap": "^3.15.0",
+    "lil-gui": "^0.21.0",
     "next": "^16.3.1",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@neuro-pay/eslint-config": "workspace:*",

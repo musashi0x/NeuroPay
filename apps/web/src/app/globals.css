@@ -17,3 +17,33 @@ body {
   color: var(--ink);
   font-family: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
 }
+
+/* --- landing carousel ---------------------------------------------------
+   The landing page is a full-bleed dark canvas experience. Its tokens and
+   display face are scoped rather than applied to `body`, so /health and any
+   future page keep the light theme above. */
+
+@font-face {
+  font-family: "carousel-display";
+  src: url("/font.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Must match PAGE_BG in src/carousel.config.ts — the WebGL renderer clears
+     to that value, and any mismatch shows as seams between the cards. */
+  --carousel-ink: #05060a;
+  --carousel-bnb: #f0b90b;
+}
+
+.carousel-root {
+  font-family: "carousel-display", "IBM Plex Sans", sans-serif;
+  overscroll-behavior: none;
+}
+
+.carousel-root ::selection {
+  background: var(--carousel-bnb);
+  color: var(--carousel-ink);
+}
