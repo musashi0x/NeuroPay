@@ -13,7 +13,19 @@ pnpm + Turborepo workspace for the neuro-pay web app and API.
 pnpm install
 ```
 
-Copy each app's `.env.example` to `.env` if you need to override defaults.
+Environment files are optional — the workspace installs, tests, builds, and boots without any of them.
+
+| File                  | Copy from               | Loaded by                                                        |
+| --------------------- | ----------------------- | ---------------------------------------------------------------- |
+| `apps/api/.env`       | `apps/api/.env.example` | `pnpm dev` / `pnpm start` via Node's `--env-file-if-exists=.env` |
+| `apps/web/.env.local` | `apps/web/.env.example` | Next.js                                                          |
+
+```bash
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env.local
+```
+
+Both are gitignored. Leave the secrets blank until you actually need the payment path — the API boots either way (see [Testing](#testing)).
 
 ## Scripts
 
@@ -37,6 +49,48 @@ Filter a single package:
 pnpm --filter @neuro-pay/web dev
 pnpm --filter @neuro-pay/api dev
 ```
+
+## Testing
+
+Vitest per package (`environment: "node"`). **Unit tests need no environment, no chain, and no network.** Every module that reads configuration takes an injected `EnvSource` — `loadAppConfig(env)` in `packages/altana/src/config/config.ts` defaults to `process.env` but tests pass their own object — so `pnpm install && pnpm test` is the whole setup.
+
+```bash
+pnpm test                              # every package that ships tests
+pnpm --filter @neuro-pay/api test      # one package
+pnpm exec turbo test --force           # ignore the Turbo cache
+```
+
+Watch mode, from inside a package directory:
+
+```bash
+pnpm exec vitest --watch
+```
+
+Five packages ship tests (`carousel`, `logger`, `types`, `tsconfig`, and `eslint-config` do not):
+
+| Package             | What is covered                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`          | App wiring and CORS, seller 402 envelopes, verification, settlement, idempotency, exposure caps, price sheet, stream blotter, console service |
+| `apps/web`          | Amount formatting, and a guard that the client bundle imports nothing server-only                                                             |
+| `packages/altana`   | Config loading and each named failure, payment encode/sign/select/request, session codec, refusals, spend accounting                          |
+| `packages/ledger`   | Append-only event store, and a guard that no secret reaches a persisted row                                                                   |
+| `packages/metering` | Accrual, budget margin, smallest-unit arithmetic, expiry, threshold-or-tick policy, boundary conditions                                       |
+
+Turbo caches test results, so an unchanged package reports `cached` and re-runs nothing. `pnpm check` is the full local gate (lint, typecheck, test, build, format).
+
+### Testing the payment path by hand
+
+The chain config is only needed to exercise payments end to end. Without it, `tryCreateRuntime` catches the `ConfigError`, logs `payment runtime disabled`, and mounts the API without the console and seller routes — `/health` and the web app still work, which is the right state for frontend and logging work.
+
+To mount the payment routes, fill these in `apps/api/.env` (the rest already default to BNB testnet):
+
+| Variable              | Why                                                                     |
+| --------------------- | ----------------------------------------------------------------------- |
+| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                  |
+| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas |
+| `ADMIN_PRIVATE_KEY`   | Only for wallet creation, `grantSession`, rail provisioning, and revoke |
+
+Use throwaway testnet-only keys. A leaked session key is bounded by the cap and expiry; a leaked admin key is total loss of the wallet. Then follow the [operator checklist](#operator-checklist-chain-97).
 
 ## CI
 
@@ -71,7 +125,7 @@ The agent pays for metered work with an Altana session key. A human approves a p
 
 ### Operator checklist (chain 97)
 
-1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them.
+1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them. `pnpm dev` and `pnpm start` load that file automatically; nothing reads it during tests.
 2. Set `RPC_URL`, `TOKEN_ADDRESS`, `TOKEN_DECIMALS`, `PAY_TO`, `SETTLER_PRIVATE_KEY`, and `ADMIN_PRIVATE_KEY`.
 3. `SESSION_SPEND_CAP` is **whole tokens**, not smallest units. `10` on an 18-decimal token becomes `10e18`. Writing `10000000000000000000` here would become `10e36`.
 4. `TOKEN_DECIMALS` is asserted against the token contract at client startup. USDT/USDC are 18 decimals on BNB and 6 on Ethereum. The wrong value makes every payment revert against a cap that looks generous.
@@ -110,7 +164,7 @@ Do not collapse the two revoke stages into one status. The console reports them 
 
 The API uses [`pino`](https://getpino.io) via the shared `@neuro-pay/logger` package.
 
-- **Format**: JSON in production (`NODE_ENV=production`), pretty-printed in development.
+- **Format**: JSON in production (`NODE_ENV=production`), pretty-printed in development. Pretty output is single-line — the structured fields stay on the same line as the message, so a request is one grep hit rather than a paragraph. Force either with `LOG_FORMAT=json|pretty`.
 - **Level**: `LOG_LEVEL` (default: `info` in prod, `debug` in dev).
 - **Per-request id**: every request gets an `x-request-id` header (inherited from the upstream if present, otherwise a v4 UUID). The id is echoed back on the response and attached to every log line for that request.
 - **Request log**: one structured line per request with `method`, `path`, `status`, `durationMs`, and `requestId`.

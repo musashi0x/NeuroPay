@@ -113,6 +113,7 @@ export const createLogger = (options: CreateLoggerOptions = {}): PinoLogger => {
           colorize: true,
           translateTime: "SYS:HH:MM:ss.l",
           ignore: "pid,hostname",
+          singleLine: true,
         },
       },
     });
