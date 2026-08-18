@@ -71,6 +71,13 @@ export default async function HealthPage() {
           </p>
         )}
       </section>
+
+      <p className="mt-8 text-sm text-[var(--muted)]">
+        Operator blotter:{" "}
+        <a className="underline" href="/console">
+          /console
+        </a>
+      </p>
     </main>
   );
 }

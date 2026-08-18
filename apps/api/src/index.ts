@@ -1,11 +1,20 @@
 import { serve } from "@hono/node-server";
-import { app } from "./app.js";
+import { createApp } from "./app.js";
 import { logger } from "./logger.js";
+import { tryCreateRuntime } from "./runtime.js";
+
+const runtime = tryCreateRuntime();
+const app = createApp({
+  ...(runtime ? { console: runtime.console, seller: runtime.seller } : {}),
+});
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 
 const server = serve({ fetch: app.fetch, port }, (info) => {
-  logger.info({ port: info.port }, "api listening");
+  logger.info(
+    { port: info.port, paymentRuntime: runtime !== null },
+    "api listening",
+  );
 });
 
 const shutdown = (signal: NodeJS.Signals) => {
@@ -15,6 +24,7 @@ const shutdown = (signal: NodeJS.Signals) => {
       logger.error({ err }, "error during shutdown");
       process.exit(1);
     }
+    runtime?.close();
     process.exit(0);
   });
 };

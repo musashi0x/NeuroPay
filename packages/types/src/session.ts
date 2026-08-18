@@ -60,3 +60,19 @@ export type SessionPolicyView = {
   /** True once the token is approved to Permit2 and Permit2 is an approved signature checker. */
   railProvisioned: boolean;
 };
+
+/**
+ * Two-stage revocation outcome. Local and on-chain are never collapsed
+ * into a single boolean — the kill switch reports them separately.
+ */
+export type RevokeResult = {
+  local: {
+    revoked: boolean;
+  };
+  onChain: {
+    revoked: boolean;
+    /** SDK execute status, or null when the on-chain call did not run. */
+    status: string | null;
+    transactionHash: Hex | null;
+  };
+};

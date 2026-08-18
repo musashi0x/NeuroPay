@@ -10,6 +10,9 @@ dist
 # test
 coverage
 
+# local payment state
+.data
+
 # env
 .env
 .env.*

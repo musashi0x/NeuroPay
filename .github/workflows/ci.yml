@@ -60,5 +60,8 @@ jobs:
       - name: Backend
         run: pnpm exec turbo run lint typecheck test build --filter=@neuro-pay/api
 
+      - name: Packages
+        run: pnpm exec turbo run lint typecheck test build --filter=@neuro-pay/metering --filter=@neuro-pay/altana --filter=@neuro-pay/ledger --filter=@neuro-pay/types
+
       - name: Format
         run: pnpm format:check
