@@ -9,7 +9,9 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "demo": "tsx --env-file-if-exists=.env scripts/demo-stream.ts",
+    "seed:session": "tsx --env-file-if-exists=.env scripts/seed-session.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

@@ -164,6 +164,11 @@ export function CarouselSection() {
   const step = STEPS[active];
   if (!step) return null;
 
+  // The console link shares the top-right corner with Close and rides the
+  // same entry gate as the rest of the chrome: hidden while the entry
+  // animation is still running, and while a card is focused.
+  const hidden = focused || (ENTRY_ENABLED && !entryDone);
+
   return (
     <div
       ref={mountRef}
@@ -230,6 +235,24 @@ export function CarouselSection() {
       >
         {noClick ? "Drag" : "Open"}
       </div>
+
+      {/* Route out to the operator console. Shares the top-right corner with
+          the Close button, which only appears in focus mode — the two swap
+          so exactly one is live at a time. A plain anchor rather than
+          next/link: the console is force-dynamic and opens an EventSource,
+          and a hard navigation tears the WebGL engine down cleanly. */}
+      <a
+        href="/console"
+        className="fixed z-50 cursor-pointer font-mono text-[11px] tracking-[0.2em] whitespace-nowrap text-white uppercase mix-blend-exclusion transition-opacity duration-300"
+        style={{
+          top: "2vh",
+          right: "4vw",
+          opacity: hidden ? 0 : 1,
+          pointerEvents: hidden ? "none" : "auto",
+        }}
+      >
+        Console
+      </a>
 
       <button
         type="button"
