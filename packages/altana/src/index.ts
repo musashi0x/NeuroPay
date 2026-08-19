@@ -96,6 +96,7 @@ export type {
 
 // Rail provisioning.
 export {
+  PERMIT2_ADDRESS,
   assertPermit2Deployed,
   Permit2NotDeployedError,
   provisionRail,

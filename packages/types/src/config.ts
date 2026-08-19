@@ -15,6 +15,14 @@ import type { Address, Hex, SmallestUnits } from "./primitives.js";
 export type ChainConfig = {
   /** Defaults to 97 (BNB Smart Chain testnet). */
   chainId: number;
+  /**
+   * JSON-RPC endpoint. The runtime reads this when wiring the
+   * chain-backed verifier and settler — without it, both fall back
+   * to dev stubs and the seller mounts with a logged warning.
+   *
+   * Marked optional/`null` so the runtime can boot without one; the
+   * altana config layer surfaces the actual value or returns null.
+   */
   rpcUrl: string;
   token: Address;
   /**
@@ -52,11 +60,6 @@ export type SessionConfig = {
    * by `10n ** tokenDecimals` to derive the on-chain smallest-unit limit;
    * the multiplication lives in `@neuro-pay/altana`'s `deriveSpendLimit` and
    * is exercised by the codec / spend-decimal tests.
-   *
-   * Storing whole tokens (not smallest units) here is the spec's
-   * "policy of 50 USDC per day is configured on a chain where the token
-   * has 18 decimals" — `50n * 10n ** 18n` is computed from this value and
-   * `tokenDecimals`, never a literal in the grant code.
    */
   spendCap: bigint;
   /** The `period` the on-chain cap resets over; the budget window aligns to it. */

@@ -19,6 +19,10 @@ export type LedgerEventType =
   | "settlement.submitted"
   | "settlement.confirmed"
   | "settlement.failed"
+  | "payment.settlement.submitted"
+  | "payment.settlement.confirmed"
+  | "payment.settlement.failed"
+  | "payment.settlement.lost"
   | "session.granted"
   | "session.revoked";
 

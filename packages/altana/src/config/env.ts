@@ -287,3 +287,15 @@ export function readOptionalPrivateKey(
     "wallet admin key, when an admin action runs",
   );
 }
+
+/** As `readUrl`, but absent is a legitimate answer rather than a failure. */
+export function readOptionalUrl(env: EnvSource, key: string): string | null {
+  if (raw(env, key) === undefined) {
+    return null;
+  }
+  return readUrl(
+    env,
+    key,
+    "JSON-RPC endpoint for contract reads and settlement submission",
+  );
+}

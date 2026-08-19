@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "demo": "tsx --env-file-if-exists=.env scripts/demo-stream.ts",
+    "demo:real": "tsx --env-file-if-exists=.env scripts/demo-real-signing.ts",
     "seed:session": "tsx --env-file-if-exists=.env scripts/seed-session.ts"
   },
   "dependencies": {
