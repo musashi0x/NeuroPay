@@ -17,19 +17,9 @@ import { openLedgerStore, type LedgerStore } from "@neuro-pay/ledger";
 import type { Address, Hex } from "@neuro-pay/types";
 import { Buffer } from "node:buffer";
 
-import {
-  createSeller,
-  type Seller,
-  type SellerOutcome,
-} from "./index.js";
-import {
-  createInMemorySettler,
-  type Settler,
-} from "./settle.js";
-import {
-  IS_VALID_SIGNATURE_MAGIC,
-  type Verifier,
-} from "./verify.js";
+import { createSeller, type Seller, type SellerOutcome } from "./index.js";
+import { createInMemorySettler, type Settler } from "./settle.js";
+import { IS_VALID_SIGNATURE_MAGIC, type Verifier } from "./verify.js";
 
 const PAYER: Address = "0x000000000000000000000000000000000000c0de";
 const TOKEN: Address = "0x55d398326f99059f775a46c830bb1ec1b4f2e75d";
@@ -64,7 +54,10 @@ type BuildOpts = {
   };
 };
 
-function buildSeller(opts: BuildOpts = {}): { seller: Seller; store: LedgerStore } {
+function buildSeller(opts: BuildOpts = {}): {
+  seller: Seller;
+  store: LedgerStore;
+} {
   const store = freshLedger();
   const verifier: Verifier =
     opts.verifier ?? (async () => IS_VALID_SIGNATURE_MAGIC);
@@ -102,7 +95,7 @@ function baseEnvelope(nonce: string): Record<string, unknown> {
   return {
     from: PAYER,
     permit: {
-      hash: "0x" + "22".repeat(32) as Hex,
+      hash: ("0x" + "22".repeat(32)) as Hex,
       signature: "0x" + "11".repeat(65),
       witness: {
         payTo: PAY_TO,
@@ -236,6 +229,25 @@ describe("seller integration — rejection paths", () => {
     if (out.kind === "rejected") {
       expect(out.classification).toBe("verification-failed");
       expect(out.detail).toMatch(/expired/i);
+    }
+  });
+
+  it("rejects an envelope after the session is revoked (kill switch)", async () => {
+    const { seller } = buildSeller();
+    seller.openStream({ requestUrl: "https://api.example/v1/streams" });
+    const stream = seller.inspectStreams()[0]!;
+    seller.endAll("session-revoked");
+
+    const out: SellerOutcome = await seller.nextSegment({
+      streamId: stream.id,
+      headers: envelopeHeaders(baseEnvelope("rej-revoked-1")),
+      requestUrl: `https://api.example/v1/streams/${stream.id}/next`,
+    });
+
+    expect(out.kind).toBe("rejected");
+    if (out.kind === "rejected") {
+      expect(out.classification).toBe("session-revoked");
+      expect(out.status).toBe(402);
     }
   });
 

@@ -324,7 +324,23 @@ export function createSeller(input: CreateSellerInput): Seller {
         return { kind: "not-found", status: 404, reason: "missing stream id" };
       }
       const record = streams.get(streamId);
-      if (!record || record.endReason !== null) {
+      if (!record) {
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "stream ended or unknown",
+        };
+      }
+      if (record.endReason === "session-revoked") {
+        return {
+          kind: "rejected",
+          status: 402,
+          classification: "session-revoked",
+          detail: "session revoked",
+          resource: req.requestUrl,
+        };
+      }
+      if (record.endReason !== null) {
         return {
           kind: "not-found",
           status: 404,

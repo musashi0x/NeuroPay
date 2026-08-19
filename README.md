@@ -112,7 +112,7 @@ The repository is mid-build. What the running app does and does not do:
 | Area                                               | State                                                                                                            |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                 |
-| Buyer payment client (`fetchWithX402`)             | Built and tested, wired into no running process — the demo script stands in                                      |
+| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)    |
 | Signature verification                             | Production runtime uses ERC-1271 via Permit2; tests inject a stub verifier                                       |
 | Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory                         |
 | On-chain revoke                                    | Not wired into the API (it needs the admin key the API deliberately lacks)                                       |
@@ -205,13 +205,12 @@ Turbo caches test results, so an unchanged package reports `cached` and re-runs 
 
 ### Driving the payment loop (`pnpm demo`)
 
-The seller half of the loop runs in the API; the buyer half
-(`fetchWithX402` in `@neuro-pay/altana`) is wired into no process. Without
-a buyer, `GET /v1/streams/:id/next` returns a 402 that nobody answers, so
-the console reads a ledger nothing writes to and every panel stays empty.
+The seller half of the loop runs in the API. Without a buyer,
+`GET /v1/streams/:id/next` returns a 402 that nobody answers, so the
+console reads a ledger nothing writes to and every panel stays empty.
 
-`apps/api/scripts/demo-stream.ts` is the missing buyer for a demo. With the
-API running:
+`apps/api/scripts/demo-stream.ts` is the synthetic buyer for a demo. With
+the API running:
 
 ```bash
 pnpm --filter @neuro-pay/api demo                  # 20 segments
@@ -238,6 +237,23 @@ the demo for console, ledger, and UI work; never as evidence that signing
 or settlement works. The witness fields (payTo, token, chainId, amount,
 deadline) are filled honestly, because the seller checks each one before
 the verifier ever runs.
+
+### Signed payments (`pnpm demo:real`)
+
+`apps/api/scripts/demo-real-signing.ts` is the buyer that actually signs.
+It loads a `PersistedSession`, attaches `SESSION_PRIVATE_KEY` as the
+store's `signerSource`, hydrates a live SDK session, and calls
+`fetchWithX402`.
+
+```bash
+# Grant with an operator-held session key so a later process can sign:
+SESSION_PRIVATE_KEY=0x... pnpm --filter @neuro-pay/altana provision
+SESSION_PRIVATE_KEY=0x... pnpm --filter @neuro-pay/api demo:real
+```
+
+The store never persists the private half. If you omit
+`SESSION_PRIVATE_KEY` at grant time, the SDK generates an ephemeral key
+that dies with the provision process and `demo:real` cannot sign.
 
 Prices must be non-zero or nothing is ever charged: `createSeller`
 defaults every price to zero, so accrual never reaches

@@ -68,6 +68,9 @@ export type {
   SessionStoreOptions,
   SignerSource,
 } from "./session/store.js";
+export { sessionFromPersisted } from "./session/hydrate.js";
+export { signerFromPrivateKey } from "@altananetwork/sdk";
+export type { Signer, Session } from "@altananetwork/sdk";
 export type {
   PersistedSession,
   PersistedSessionPermissions,
@@ -132,6 +135,8 @@ export { policyCheck } from "./payment/policy.js";
 export type { PolicyCheckInput } from "./payment/policy.js";
 export { buildPaymentContext } from "./payment/context.js";
 export type { PaymentClientContext } from "./payment/context.js";
+export { createBuyerPaymentContext } from "./payment/buyer.js";
+export type { CreateBuyerPaymentContextInput } from "./payment/buyer.js";
 export {
   PaymentFailureError,
   isBuyerPaymentFailure,
