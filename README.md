@@ -1,6 +1,131 @@
 # neuro-pay
 
-pnpm + Turborepo workspace for the neuro-pay web app and API.
+**Agents buy the services they need, and pay per call.**
+
+A catalog of paid APIs and the gateway that settles them on BNB Chain. An
+endpoint owner lists a service and sets a price. An agent calls it with no
+account, no key, and no card — the gateway answers `HTTP 402 Payment
+Required` with a price, a chain, and an address, checks the demand against
+the grant its owner approved once, and settles on chain before the call
+runs. One status code is the whole handshake.
+
+pnpm + Turborepo workspace: a Next.js frontend (`apps/web`), a Hono API
+(`apps/api`), and the payment, metering, and ledger packages they share.
+
+## The use case
+
+An autonomous agent needs paid data mid-task — a price feed, an inference
+endpoint, a search index. The usual answers all break down: an API key has
+to be issued and rotated by a human, a card can't be handed to a process
+that runs unattended, and an invoice arrives long after the agent has
+spent whatever it wanted.
+
+This is the alternative:
+
+| Step                  | What happens                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Grant, once**       | A human approves a policy: spend cap per period, expiry, an explicit allowlist of calls                 |
+| **Call, unpaid**      | The agent requests the endpoint with nothing attached                                                   |
+| **402**               | The gateway answers with the amount, token, chain, and recipient for this call                          |
+| **Authorize**         | The demand is checked against the grant. Over the cap, past expiry, or off the allowlist — it refuses   |
+| **Sign, server-side** | The session key signs a Permit2 witness bound to the recipient. The browser never receives a key        |
+| **Settle**            | Payment moves on chain, then delivery proceeds                                                          |
+| **Receipt**           | Every stage lands in an append-only ledger the console reads: verified, delivered, submitted, confirmed |
+
+What that buys you: an agent that can spend money without holding a
+credential that can spend _unlimited_ money. The cap is enforced on chain,
+the expiry is enforced on chain, and the kill switch stops signing
+locally in milliseconds while the on-chain revoke confirms. See
+[what is bounded, and what is not](#what-is-bounded-and-what-is-not) for
+the honest limits.
+
+For metered work — a stream rather than a single call — the seller
+accrues cost per segment and demands payment when accrual crosses
+`SETTLEMENT_THRESHOLD` or the tick interval elapses, whichever comes
+first. That keeps the seller's credit exposure bounded to
+`SETTLEMENT_THRESHOLD × MAX_IN_FLIGHT_SETTLEMENTS` if the buyer walks
+away mid-stream.
+
+## Using the app
+
+The fast path — no chain, no keys, no funds. Everything below is local.
+
+```bash
+pnpm install
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env.local
+```
+
+`.env.example` already targets BNB testnet and ships dev-scale prices. Two
+values are still blank because they are secrets: `PAY_TO` (any address) and
+`SETTLER_PRIVATE_KEY` (any well-formed key). For the local walkthrough they
+are only format-checked — nothing signs, nothing is submitted — so
+throwaway values are enough. Generate a pair with:
+
+```bash
+pnpm --filter @neuro-pay/altana exec node --input-type=module -e \
+  "import {generatePrivateKey, privateKeyToAccount} from 'viem/accounts'; \
+   const k=generatePrivateKey(); console.log(k, privateKeyToAccount(k).address)"
+```
+
+Then:
+
+```bash
+pnpm --filter @neuro-pay/api seed:session   # a session for the console to show
+pnpm dev                                    # web :3000, api :4000
+```
+
+Open [http://localhost:3000](http://localhost:3000) for the landing page and
+click **Console** in the top-right corner, or go straight to
+[http://localhost:3000/console](http://localhost:3000/console).
+
+The console has five panels:
+
+| Panel               | What it tells you                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| **Session policy**  | Wallet, spend cap, expiry, allowed calls, whether the rail is provisioned                |
+| **Budget**          | Spent this window against both limits — the local budget and the on-chain cap            |
+| **Streams**         | Every open stream: pinned prices, accrued unpaid, delivered units, settlements in flight |
+| **Payment history** | The append-only ledger: verified, delivered, submitted, confirmed, rejected              |
+| **Kill switch**     | Type `REVOKE` to stop signing. Local and on-chain stages are reported separately         |
+
+They start empty because nothing has bought anything yet. Drive traffic
+through them:
+
+```bash
+pnpm --filter @neuro-pay/api demo
+```
+
+That opens a stream, pulls segments, and answers each 402. The console
+updates live over SSE — watch accrual climb, a 402 fire at the threshold,
+and payments land in the ledger. Details and the honest caveats are in
+[Driving the payment loop](#driving-the-payment-loop-pnpm-demo).
+
+When you want the real thing — a session granted on chain, funded wallet,
+actual settlement — follow the
+[operator checklist](#operator-checklist-chain-97).
+
+### What works today
+
+The repository is mid-build. What the running app does and does not do:
+
+| Area                                               | State                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                               |
+| Buyer payment client (`fetchWithX402`)             | Built and tested, wired into no running process — the demo script stands in    |
+| Signature verification                             | Stubbed: the composition root accepts every envelope                           |
+| Settlement                                         | In-memory settler; no transaction is submitted                                 |
+| On-chain revoke                                    | Not wired into the API (it needs the admin key the API deliberately lacks)     |
+| Payment crediting the meter                        | `recordSettle` exists but nothing calls it, so `accruedUnpaid` never decreases |
+
+The last one is worth knowing before you read the numbers: because
+payments never credit the meter, each 402 demands the full running total
+again, and a long demo run shows the buyer paying far more than it
+consumed.
+
+One naming inconsistency: the product copy says USDC, while
+`.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
+config is authoritative — verify the address on the explorer before use.
 
 ## Prerequisites
 
@@ -13,7 +138,19 @@ pnpm + Turborepo workspace for the neuro-pay web app and API.
 pnpm install
 ```
 
-Copy each app's `.env.example` to `.env` if you need to override defaults.
+Environment files are optional — the workspace installs, tests, builds, and boots without any of them.
+
+| File                  | Copy from               | Loaded by                                                        |
+| --------------------- | ----------------------- | ---------------------------------------------------------------- |
+| `apps/api/.env`       | `apps/api/.env.example` | `pnpm dev` / `pnpm start` via Node's `--env-file-if-exists=.env` |
+| `apps/web/.env.local` | `apps/web/.env.example` | Next.js                                                          |
+
+```bash
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env.local
+```
+
+Both are gitignored. Leave the secrets blank until you actually need the payment path — the API boots either way (see [Testing](#testing)).
 
 ## Scripts
 
@@ -37,6 +174,127 @@ Filter a single package:
 pnpm --filter @neuro-pay/web dev
 pnpm --filter @neuro-pay/api dev
 ```
+
+## Testing
+
+Vitest per package (`environment: "node"`). **Unit tests need no environment, no chain, and no network.** Every module that reads configuration takes an injected `EnvSource` — `loadAppConfig(env)` in `packages/altana/src/config/config.ts` defaults to `process.env` but tests pass their own object — so `pnpm install && pnpm test` is the whole setup.
+
+```bash
+pnpm test                              # every package that ships tests
+pnpm --filter @neuro-pay/api test      # one package
+pnpm exec turbo test --force           # ignore the Turbo cache
+```
+
+Watch mode, from inside a package directory:
+
+```bash
+pnpm exec vitest --watch
+```
+
+Five packages ship tests (`carousel`, `logger`, `types`, `tsconfig`, and `eslint-config` do not):
+
+| Package             | What is covered                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`          | App wiring and CORS, seller 402 envelopes, verification, settlement, idempotency, exposure caps, price sheet, stream blotter, console service |
+| `apps/web`          | Amount formatting, and a guard that the client bundle imports nothing server-only                                                             |
+| `packages/altana`   | Config loading and each named failure, payment encode/sign/select/request, session codec, refusals, spend accounting                          |
+| `packages/ledger`   | Append-only event store, and a guard that no secret reaches a persisted row                                                                   |
+| `packages/metering` | Accrual, budget margin, smallest-unit arithmetic, expiry, threshold-or-tick policy, boundary conditions                                       |
+
+Turbo caches test results, so an unchanged package reports `cached` and re-runs nothing. `pnpm check` is the full local gate (lint, typecheck, test, build, format).
+
+### Driving the payment loop (`pnpm demo`)
+
+The seller half of the loop runs in the API; the buyer half
+(`fetchWithX402` in `@neuro-pay/altana`) is wired into no process. Without
+a buyer, `GET /v1/streams/:id/next` returns a 402 that nobody answers, so
+the console reads a ledger nothing writes to and every panel stays empty.
+
+`apps/api/scripts/demo-stream.ts` is the missing buyer for a demo. With the
+API running:
+
+```bash
+pnpm --filter @neuro-pay/api demo                  # 20 segments
+pnpm --filter @neuro-pay/api demo --segments 50 --delay 200
+```
+
+It opens a stream, pulls segments, answers each 402, and prints the
+accrual as it goes. Watch it land live at
+[http://localhost:3000/console](http://localhost:3000/console) — the
+blotter updates over SSE.
+
+**It does not sign.** The envelope carries a placeholder signature and is
+accepted only because the composition root currently injects a stub
+verifier and an in-memory settler:
+
+```ts
+verifier: async () => IS_VALID_SIGNATURE_MAGIC   // apps/api/src/runtime.ts
+settler: createInMemorySettler({ ... })          // apps/api/src/runtime.ts
+```
+
+Against a real ERC-1271 verifier every payment is rejected as
+`verification-failed`, which is correct — there is no real signature. Use
+the demo for console, ledger, and UI work; never as evidence that signing
+or settlement works. The witness fields (payTo, token, chainId, amount,
+deadline) are filled honestly, because the seller checks each one before
+the verifier ever runs.
+
+Prices must be non-zero or nothing is ever charged: `createSeller`
+defaults every price to zero, so accrual never reaches
+`SETTLEMENT_THRESHOLD` and no 402 is generated. Set `PRICE_PER_UNIT` (and
+optionally `PRICE_PER_CALL` / `PRICE_PER_SECOND`, all in smallest units)
+in `apps/api/.env`; `.env.example` ships dev-scale values.
+
+### Seeding a session (`pnpm seed:session`)
+
+`/v1/session`, `/v1/budget`, and `POST /v1/session/revoke` all read the
+first record in the `SessionStore`. With an empty store the first two
+answer 404 (the console renders empty panels) and revoke answers 404,
+which the UI shows as `revoke failed with 404`. The store's only real
+writer is the provisioner, which needs an admin key, a funded wallet, and
+on-chain fees.
+
+For console work, seed a fake record instead:
+
+```bash
+pnpm --filter @neuro-pay/api seed:session
+```
+
+It writes a `PersistedSession` through the same byte-exact codec, so the
+session card, the budget meter, and the local half of the kill switch all
+work offline. The record describes a session that does not exist on chain
+and has no signer behind it — nothing can sign a payment with it. Pass
+`--force` to overwrite an existing record, and `--wallet 0x…` to choose the
+address.
+
+Revoke against a seeded session returns exactly what the API can do today:
+
+```json
+{
+  "local": { "revoked": true },
+  "onChain": { "revoked": false, "status": null, "transactionHash": null }
+}
+```
+
+The on-chain stage is not wired into the API: `revokeSession` needs the
+admin signer, and the API deliberately holds no admin key. Stage two is
+the provisioner's job today. The console reports the two stages
+separately, so this reads as "signing stopped, chain not yet updated"
+rather than a completed revoke.
+
+### Testing the payment path by hand
+
+The chain config is only needed to exercise payments end to end. Without it, `tryCreateRuntime` catches the `ConfigError`, logs `payment runtime disabled`, and mounts the API without the console and seller routes — `/health` and the web app still work, which is the right state for frontend and logging work.
+
+To mount the payment routes, fill these in `apps/api/.env` (the rest already default to BNB testnet):
+
+| Variable              | Why                                                                     |
+| --------------------- | ----------------------------------------------------------------------- |
+| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                  |
+| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas |
+| `ADMIN_PRIVATE_KEY`   | Only for wallet creation, `grantSession`, rail provisioning, and revoke |
+
+Use throwaway testnet-only keys. A leaked session key is bounded by the cap and expiry; a leaked admin key is total loss of the wallet. Then follow the [operator checklist](#operator-checklist-chain-97).
 
 ## CI
 
@@ -71,12 +329,15 @@ The agent pays for metered work with an Altana session key. A human approves a p
 
 ### Operator checklist (chain 97)
 
-1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them.
+1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them. `pnpm dev` and `pnpm start` load that file automatically; nothing reads it during tests.
 2. Set `RPC_URL`, `TOKEN_ADDRESS`, `TOKEN_DECIMALS`, `PAY_TO`, `SETTLER_PRIVATE_KEY`, and `ADMIN_PRIVATE_KEY`.
 3. `SESSION_SPEND_CAP` is **whole tokens**, not smallest units. `10` on an 18-decimal token becomes `10e18`. Writing `10000000000000000000` here would become `10e36`.
 4. `TOKEN_DECIMALS` is asserted against the token contract at client startup. USDT/USDC are 18 decimals on BNB and 6 on Ethereum. The wrong value makes every payment revert against a cap that looks generous.
 5. Fund the settler EOA with testnet BNB (gas). A drained settler is reported as its own alarm; verification still passes.
-6. Provision the wallet and session:
+6. Provision the wallet and session. The grant is written to
+   `SESSION_STORE_PATH` (default `.data/session.json`) — the same file the
+   API reads at startup, so the console sees the session the provisioner
+   created:
 
    ```bash
    pnpm --filter @neuro-pay/altana provision
@@ -110,7 +371,7 @@ Do not collapse the two revoke stages into one status. The console reports them 
 
 The API uses [`pino`](https://getpino.io) via the shared `@neuro-pay/logger` package.
 
-- **Format**: JSON in production (`NODE_ENV=production`), pretty-printed in development.
+- **Format**: JSON in production (`NODE_ENV=production`), pretty-printed in development. Pretty output is single-line — the structured fields stay on the same line as the message, so a request is one grep hit rather than a paragraph. Force either with `LOG_FORMAT=json|pretty`.
 - **Level**: `LOG_LEVEL` (default: `info` in prod, `debug` in dev).
 - **Per-request id**: every request gets an `x-request-id` header (inherited from the upstream if present, otherwise a v4 UUID). The id is echoed back on the response and attached to every log line for that request.
 - **Request log**: one structured line per request with `method`, `path`, `status`, `durationMs`, and `requestId`.

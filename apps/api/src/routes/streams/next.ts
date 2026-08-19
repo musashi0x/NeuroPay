@@ -14,6 +14,7 @@
 import { Hono, type Context } from "hono";
 import type { Seller, SellerOutcome } from "../../seller/index.js";
 import { stringifyPaymentRequired } from "../../seller/requirements.js";
+import { toJsonSafe } from "../../json.js";
 
 export type NextSegmentDeps = {
   seller: Pick<Seller, "nextSegment">;
@@ -45,7 +46,11 @@ export function nextSegmentRoute(deps: NextSegmentDeps): Hono {
 export function renderOutcome(c: Context, outcome: SellerOutcome): Response {
   switch (outcome.kind) {
     case "delivered":
-      return c.json(outcome.body, 200);
+      // `SegmentResponse.accruedUnpaid` and `.totalAccrued` are bigint;
+      // `JSON.stringify` throws on those, so every amount goes out as a
+      // decimal string — the encoding the console routes already use and
+      // the one the web client's `reviveWire` reads back.
+      return c.json(toJsonSafe(outcome.body), 200);
     case "payment-required":
       return c.json(stringifyPaymentRequired(outcome.body), 402);
     case "not-found":
@@ -54,7 +59,7 @@ export function renderOutcome(c: Context, outcome: SellerOutcome): Response {
         404,
       );
     case "exposure-limit":
-      return c.json(outcome.refusal, 503);
+      return c.json(toJsonSafe(outcome.refusal), 503);
     case "rejected":
       return c.json(
         {

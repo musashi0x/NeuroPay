@@ -34,6 +34,8 @@
  *    `apps/api` instead.
  */
 
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { loadAppConfig } from "../src/config/config.js";
 import { buildAltanaClient } from "../src/client.js";
 import { provisionWallet } from "../src/wallet.js";
@@ -83,8 +85,18 @@ function asCallPermission(p: CallPermission): {
   signature: string;
   to?: Address;
 } {
-  // The SDK's CallPermission is a tagged union; we project it onto
-  // the persisted shape the grant path expects.
+  // The SDK's CallPermission is a union of three shapes: signature+to,
+  // signature alone, and to alone. The persisted session requires a
+  // signature, and a target-only entry means "every call to this address"
+  // — the implicit policy hole the allowlist exists to close. Refuse it
+  // rather than widening the persisted shape to express it.
+  if (!("signature" in p)) {
+    throw new Error(
+      `ALLOWLIST entry ${JSON.stringify(p)} has no \`signature\`: a ` +
+        "target-only permission allows every call to that address. List " +
+        "the call signatures the session actually needs.",
+    );
+  }
   if ("to" in p && p.to !== undefined) {
     return { signature: p.signature, to: p.to };
   }
@@ -120,9 +132,17 @@ async function main(): Promise<void> {
     "  -> Fund this wallet with testnet BNB (for gas) and the payment token (for the spend cap).",
   );
 
-  // 4. Grant the session. The persisted record is held in the in-memory
-  // store; we never write key material to disk.
-  const store = new SessionStore();
+  // 4. Grant the session. The record is written to the same file the API
+  // reads at startup (`SESSION_STORE_PATH`), or the store is left in
+  // memory when the operator points it at nothing. An in-memory grant
+  // dies with this process, and the API then boots against an empty
+  // store: `/v1/session`, `/v1/budget`, and the revoke kill switch all
+  // answer 404 with a session that exists on chain. Key material is still
+  // never written — `SessionStore` persists the public half only.
+  const sessionStorePath =
+    process.env["SESSION_STORE_PATH"] ?? ".data/session.json";
+  mkdirSync(dirname(sessionStorePath), { recursive: true });
+  const store = new SessionStore({ fileStorePath: sessionStorePath });
   const result = await grantSession(ctx.client, store, {
     wallet: { address: wallet.walletAddress } as never,
     adminSigner: wallet.adminSigner,
@@ -137,6 +157,7 @@ async function main(): Promise<void> {
   );
   console.log(`Session expiry: ${result.persisted.expiry}`);
   console.log(`Session public key: ${result.persisted.publicKey}`);
+  console.log(`Session persisted to: ${sessionStorePath}`);
 
   // 5. Provision the permit2 rail. The rail is the local gate the
   // payment client asserts against before signing.

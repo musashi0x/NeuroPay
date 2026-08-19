@@ -5,15 +5,16 @@
  * that owns the stream store, the price registry, and the settler. We
  * just hand the seller the request URL and ask for the open response.
  *
- * The 200 shape is the wire `StreamOpenResponse` with one concession to
- * the wire: `priceSheet` is serialized as a JSON-safe object (the
- * `priceSheet` field is itself serializable, but the inner `PriceSheet`
- * has no bigint, so this is a no-op for now; the JSON helper is
- * centralized so a future bigint field on the sheet cannot ship
- * unconverted).
+ * The 200 shape is the wire `StreamOpenResponse` passed through
+ * `toJsonSafe`: the pinned `PriceSheet` carries `perCall`, `perSecond`,
+ * and `perUnit` as `bigint`, and `JSON.stringify` throws on those. The
+ * helper renders every amount as a decimal string, which is the same
+ * encoding the console routes use and what the web client's
+ * `reviveWire` expects back.
  */
 import { Hono } from "hono";
 import type { Seller, StreamOpenResponse } from "../../seller/index.js";
+import { toJsonSafe } from "../../json.js";
 
 export type OpenStreamDeps = {
   seller: Pick<Seller, "openStream">;
@@ -29,7 +30,7 @@ export function openStreamRoute(deps: OpenStreamDeps): Hono {
       requestUrl,
     });
 
-    return c.json(response, 200);
+    return c.json(toJsonSafe(response), 200);
   });
 
   return app;
