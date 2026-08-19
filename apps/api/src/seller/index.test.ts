@@ -13,7 +13,11 @@ import { describe, expect, it } from "vitest";
 import { openLedgerStore, type LedgerStore } from "@neuro-pay/ledger";
 import type { Address } from "@neuro-pay/types";
 import type { Clock, MeteringConfig } from "@neuro-pay/metering";
-import { createInMemorySettler, type Settler } from "./settle.js";
+import {
+  createInMemorySettler,
+  createStallingSettler,
+  type Settler,
+} from "./settle.js";
 import { IS_VALID_SIGNATURE_MAGIC, type Verifier } from "./verify.js";
 import { createSeller, type Seller } from "./index.js";
 import { Buffer } from "node:buffer";
@@ -225,5 +229,151 @@ describe("seller composition root", () => {
 
     const stats = seller.exposureStats();
     expect(stats.ceiling).toBe(1);
+  });
+
+  it("credits accruedUnpaid once settlement confirms", async () => {
+    const { seller } = buildSeller({});
+    const opened = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    const env = {
+      from: PAYER,
+      permit: {
+        hash: "0x" + "22".repeat(32),
+        signature: "0x" + "11".repeat(65),
+        witness: {
+          payTo: PAY_TO,
+          amount: "1000",
+          token: TOKEN,
+          chainId: 97,
+          nonce: "settle-credit-1",
+        },
+      },
+    };
+
+    const delivered = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(delivered.kind).toBe("delivered");
+    if (delivered.kind !== "delivered") return;
+    const body = delivered.body as {
+      accruedUnpaid: bigint;
+      totalAccrued: bigint;
+    };
+    expect(body.accruedUnpaid).toBeGreaterThan(0n);
+    expect(body.totalAccrued).toBe(body.accruedUnpaid);
+
+    await seller.drainSettlements();
+
+    const after = seller.inspectStreams()[0]!;
+    expect(after.meter.accruedUnpaid).toBe(0n);
+    expect(after.meter.totalAccrued).toBe(body.totalAccrued);
+  });
+
+  it("holds the exposure slot until confirmation, then resumes delivery", async () => {
+    const stalled = createStallingSettler();
+    const { seller } = buildSeller({
+      settler: stalled.settler,
+      meteringConfig: {
+        budgetMargin: 0,
+        settlementThreshold: 1n,
+        tickIntervalSeconds: 60,
+        maxInFlightSettlements: 1,
+      },
+    });
+    const opened = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    const env = (nonce: string) => ({
+      from: PAYER,
+      permit: {
+        hash: "0x" + "22".repeat(32),
+        signature: "0x" + "11".repeat(65),
+        witness: {
+          payTo: PAY_TO,
+          amount: "1",
+          token: TOKEN,
+          chainId: 97,
+          nonce,
+        },
+      },
+    });
+
+    const first = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env("stall-1")),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(first.kind).toBe("delivered");
+
+    const blocked = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env("stall-2")),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(blocked.kind).toBe("exposure-limit");
+    expect(seller.exposureStats().inFlight).toBe(1);
+
+    stalled.confirm();
+    await seller.drainSettlements();
+    expect(seller.exposureStats().inFlight).toBe(0);
+
+    const resumed = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env("stall-3")),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(resumed.kind).toBe("delivered");
+  });
+
+  it("keeps the exposure slot after a failed settlement", async () => {
+    const { seller } = buildSeller({
+      settler: createInMemorySettler({ defaultBehavior: "revert" }),
+      meteringConfig: {
+        budgetMargin: 0,
+        settlementThreshold: 1n,
+        tickIntervalSeconds: 60,
+        maxInFlightSettlements: 1,
+      },
+    });
+    const opened = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    const env = (nonce: string) => ({
+      from: PAYER,
+      permit: {
+        hash: "0x" + "22".repeat(32),
+        signature: "0x" + "11".repeat(65),
+        witness: {
+          payTo: PAY_TO,
+          amount: "1",
+          token: TOKEN,
+          chainId: 97,
+          nonce,
+        },
+      },
+    });
+
+    const first = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env("fail-hold-1")),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(first.kind).toBe("delivered");
+    await seller.drainSettlements();
+
+    expect(seller.exposureStats().inFlight).toBe(1);
+
+    const second = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders(env("fail-hold-2")),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(second.kind).toBe("exposure-limit");
+
+    const after = seller.inspectStreams()[0]!;
+    expect(after.meter.accruedUnpaid).toBeGreaterThan(0n);
   });
 });

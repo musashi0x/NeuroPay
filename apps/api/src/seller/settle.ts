@@ -85,6 +85,22 @@ export class SettlementRevertedError extends Error {
 }
 
 /**
+ * Thrown when a submitted settlement never confirms before the settler's
+ * timeout. Distinct from revert: the chain may still land the tx later.
+ */
+export class SettlementLostError extends Error {
+  readonly transactionHash: Hex;
+  constructor(
+    transactionHash: Hex,
+    message: string = "settlement lost (timeout)",
+  ) {
+    super(message);
+    this.name = "SettlementLostError";
+    this.transactionHash = transactionHash;
+  }
+}
+
+/**
  * The settler contract. `submitSettle` is fire-and-forget: the call
  * site awaits the submission only — confirmation lands out-of-band
  * via `awaitConfirmation` (or via a polling block watcher in
@@ -144,6 +160,22 @@ export type SettlementQueue = {
 };
 
 /**
+ * Optional accounting callbacks. Invoked after the matching ledger write
+ * so a hook throw cannot swallow a recorded outcome.
+ */
+export type SettlementQueueHooks = {
+  onConfirmed?: (input: SettlementInput) => void | Promise<void>;
+  onFailed?: (
+    input: SettlementInput,
+    failure: {
+      classification: PaymentFailureClassification;
+      detail: string;
+      transactionHash: Hex | null;
+    },
+  ) => void | Promise<void>;
+};
+
+/**
  * Build a settlement queue with an injected settler + ledger. The queue
  * owns:
  *  - the in-flight set of pending confirmations
@@ -153,67 +185,66 @@ export type SettlementQueue = {
 export function createSettlementQueue(input: {
   settler: Settler;
   store: LedgerStore;
+  hooks?: SettlementQueueHooks;
 }): SettlementQueue {
   const pending = new Set<Promise<void>>();
   let count = 0;
 
   return {
     async enqueue(s) {
-      let submitted: SettlementSubmitted;
-      try {
-        submitted = await input.settler.submitSettle(s);
-      } catch (cause) {
-        if (cause instanceof SettlerOutOfGasError) {
-          await recordSettlementFailed({
-            store: input.store,
-            ctx: ctxFor(s),
-            amount: s.amount,
-            nonce: s.nonce,
-            classification:
-              "settler-out-of-gas" satisfies PaymentFailureClassification,
-            detail: cause.message,
-          });
-          throw cause;
+      let resolveSubmitted!: (value: SettlementSubmitted) => void;
+      let rejectSubmitted!: (cause: unknown) => void;
+      const submittedP = new Promise<SettlementSubmitted>((resolve, reject) => {
+        resolveSubmitted = resolve;
+        rejectSubmitted = reject;
+      });
+
+      // Track the full submit→confirm job from the first tick so
+      // `drain()` cannot miss a fire-and-forget enqueue.
+      const job = (async () => {
+        let submitted: SettlementSubmitted;
+        try {
+          submitted = await input.settler.submitSettle(s);
+        } catch (cause) {
+          try {
+            if (cause instanceof SettlerOutOfGasError) {
+              await recordFailed(input, s, {
+                classification:
+                  "settler-out-of-gas" satisfies PaymentFailureClassification,
+                detail: cause.message,
+                transactionHash: null,
+              });
+            } else if (cause instanceof SettlementRevertedError) {
+              await recordFailed(input, s, {
+                classification:
+                  "settlement-reverted" satisfies PaymentFailureClassification,
+                transactionHash: cause.transactionHash,
+                detail: cause.message,
+              });
+            } else {
+              await recordFailed(input, s, {
+                classification:
+                  "settlement-reverted" satisfies PaymentFailureClassification,
+                detail: cause instanceof Error ? cause.message : String(cause),
+                transactionHash: null,
+              });
+            }
+          } finally {
+            rejectSubmitted(cause);
+          }
+          return;
         }
-        if (cause instanceof SettlementRevertedError) {
-          await recordSettlementFailed({
-            store: input.store,
-            ctx: ctxFor(s),
-            amount: s.amount,
-            nonce: s.nonce,
-            classification:
-              "settlement-reverted" satisfies PaymentFailureClassification,
-            transactionHash: cause.transactionHash,
-            detail: cause.message,
-          });
-          throw cause;
-        }
-        // Unknown failure → classify as settlement-reverted (most common).
-        await recordSettlementFailed({
+
+        await recordSettlementSubmitted({
           store: input.store,
           ctx: ctxFor(s),
           amount: s.amount,
           nonce: s.nonce,
-          classification:
-            "settlement-reverted" satisfies PaymentFailureClassification,
-          detail: cause instanceof Error ? cause.message : String(cause),
+          transactionHash: submitted.transactionHash,
         });
-        throw cause;
-      }
+        count += 1;
+        resolveSubmitted(submitted);
 
-      // Submission landed — record `settlement.submitted` immediately.
-      await recordSettlementSubmitted({
-        store: input.store,
-        ctx: ctxFor(s),
-        amount: s.amount,
-        nonce: s.nonce,
-        transactionHash: submitted.transactionHash,
-      });
-      count += 1;
-
-      // Schedule the confirmation promise so we can track "in flight"
-      // and surface a way for tests to drain.
-      const confirmation = (async () => {
         try {
           await input.settler.awaitConfirmation(submitted.transactionHash);
           await recordSettlementConfirmed({
@@ -223,36 +254,38 @@ export function createSettlementQueue(input: {
             nonce: s.nonce,
             transactionHash: submitted.transactionHash,
           });
+          await invokeHook(() => input.hooks?.onConfirmed?.(s));
         } catch (cause) {
           if (cause instanceof SettlementRevertedError) {
-            await recordSettlementFailed({
-              store: input.store,
-              ctx: ctxFor(s),
-              amount: s.amount,
-              nonce: s.nonce,
+            await recordFailed(input, s, {
+              classification:
+                "settlement-reverted" satisfies PaymentFailureClassification,
+              transactionHash: cause.transactionHash,
+              detail: cause.message,
+            });
+          } else if (cause instanceof SettlementLostError) {
+            await recordFailed(input, s, {
               classification:
                 "settlement-reverted" satisfies PaymentFailureClassification,
               transactionHash: cause.transactionHash,
               detail: cause.message,
             });
           } else {
-            await recordSettlementFailed({
-              store: input.store,
-              ctx: ctxFor(s),
-              amount: s.amount,
-              nonce: s.nonce,
+            await recordFailed(input, s, {
               classification:
                 "settlement-reverted" satisfies PaymentFailureClassification,
               detail: cause instanceof Error ? cause.message : String(cause),
+              transactionHash: null,
             });
           }
         } finally {
           count -= 1;
         }
       })();
-      pending.add(confirmation);
-      confirmation.finally(() => pending.delete(confirmation));
-      return { transactionHash: submitted.transactionHash };
+      pending.add(job);
+      job.finally(() => pending.delete(job));
+
+      return { transactionHash: (await submittedP).transactionHash };
     },
     inFlight() {
       return count;
@@ -267,6 +300,48 @@ export function createSettlementQueue(input: {
       count = 0;
     },
   };
+}
+
+async function recordFailed(
+  input: {
+    store: LedgerStore;
+    hooks?: SettlementQueueHooks;
+  },
+  s: SettlementInput,
+  failure: {
+    classification: PaymentFailureClassification;
+    detail: string;
+    transactionHash?: Hex | null;
+  },
+): Promise<void> {
+  const transactionHash = failure.transactionHash ?? null;
+  await recordSettlementFailed({
+    store: input.store,
+    ctx: ctxFor(s),
+    amount: s.amount,
+    nonce: s.nonce,
+    classification: failure.classification,
+    transactionHash,
+    detail: failure.detail,
+  });
+  await invokeHook(() =>
+    input.hooks?.onFailed?.(s, {
+      classification: failure.classification,
+      detail: failure.detail,
+      transactionHash,
+    }),
+  );
+}
+
+async function invokeHook(
+  fn: () => void | Promise<void> | undefined,
+): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    // Accounting hooks must not fail the settlement pipeline or hide
+    // an already-recorded ledger outcome.
+  }
 }
 
 function ctxFor(input: SettlementInput): {
@@ -340,6 +415,66 @@ export function createInMemorySettler(
       }
       return;
       void defaultHash; // referenced when no per-nonce override
+    },
+  };
+}
+
+/**
+ * Settler whose confirmations stay pending until the test calls
+ * `confirm()` or `revert()`. Used to exercise the exposure gate
+ * deterministically: acquire a slot, refuse the next delivery, then
+ * release.
+ */
+export function createStallingSettler(
+  options: {
+    defaultTransactionHash?: Hex;
+  } = {},
+): {
+  settler: Settler;
+  confirm: () => void;
+  revert: () => void;
+  lose: () => void;
+} {
+  const defaultHash =
+    options.defaultTransactionHash ?? (("0x" + "cd".repeat(32)) as Hex);
+  let resolveGate: () => void = () => {
+    /* set in Promise executor */
+  };
+  let rejectGate: (err: Error) => void = () => {
+    /* set in Promise executor */
+  };
+  const gate = new Promise<void>((resolve, reject) => {
+    resolveGate = resolve;
+    rejectGate = reject;
+  });
+  return {
+    settler: {
+      async submitSettle() {
+        return { transactionHash: defaultHash };
+      },
+      async awaitConfirmation(transactionHash) {
+        await gate;
+        void transactionHash;
+      },
+    },
+    confirm() {
+      resolveGate();
+    },
+    revert() {
+      rejectGate(
+        new SettlementRevertedError(
+          defaultHash,
+          "stalling settler: simulated revert",
+        ),
+      );
+    },
+    lose() {
+      rejectGate(
+        new SettlementLostError(
+          defaultHash,
+          "stalling settler: simulated lost tx",
+        ),
+      );
     },
   };
 }

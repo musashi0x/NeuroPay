@@ -66,6 +66,8 @@ import {
   type SettlementQueue,
   createSettlementQueue,
 } from "./settle.js";
+import { attachSettlementHooks } from "./settlement-hooks.js";
+import { logger } from "../logger.js";
 import {
   type PriceRegistry,
   bumpPriceSheet,
@@ -237,6 +239,11 @@ export function createSeller(input: CreateSellerInput): Seller {
   const queue: SettlementQueue = createSettlementQueue({
     settler: input.settler,
     store: input.store,
+    hooks: attachSettlementHooks({
+      streams,
+      exposure,
+      clock,
+    }),
   });
 
   /**
@@ -509,8 +516,8 @@ export function createSeller(input: CreateSellerInput): Seller {
       });
 
       // Async settlement. Don't await — return the segment immediately.
-      // The exposure counter is decremented by the settle.onConfirm hook
-      // (wired outside this composition root via `release()`).
+      // Exposure is released only on confirmation (via settlement hooks).
+      // Failed or lost settlements keep the slot as unrecovered exposure.
       const settlementInput: SettlementInput = {
         nonce: parsed.nonce!,
         streamId,
@@ -522,21 +529,16 @@ export function createSeller(input: CreateSellerInput): Seller {
         payer: parsed.from,
         payTo: input.config.payTo,
       };
-      // The queue's submitAwaitable signature varies; we use the
-      // helper that returns the tx hash and triggers the
-      // confirm-and-release flow via the catch path.
-      queue
-        .enqueue(settlementInput)
-        .catch(() => {
-          // Settlement failure is already recorded by the queue; the
-          // exposure counter is decremented in the confirm-or-fail path.
-        })
-        .then(() => {
-          exposure.release();
-        })
-        .catch(() => {
-          exposure.release();
-        });
+      void queue.enqueue(settlementInput).catch((cause: unknown) => {
+        logger.warn(
+          {
+            err: cause instanceof Error ? cause.message : String(cause),
+            nonce: settlementInput.nonce,
+            streamId,
+          },
+          "settlement enqueue failed; exposure held as unrecovered",
+        );
+      });
 
       return {
         kind: "delivered",

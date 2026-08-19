@@ -41,6 +41,7 @@ import {
   type SettlementSubmitted,
   type Settler,
   SettlerOutOfGasError,
+  SettlementLostError,
   SettlementRevertedError,
 } from "./settle.js";
 
@@ -169,8 +170,7 @@ export function createChainBackedSettler(
           ],
         });
       } catch (cause: unknown) {
-        const message =
-          cause instanceof Error ? cause.message : String(cause);
+        const message = cause instanceof Error ? cause.message : String(cause);
         if (/out of gas|insufficient funds/i.test(message)) {
           throw new SettlerOutOfGasError(
             `chain settler: ${message} (nonce=${input.nonce})`,
@@ -221,7 +221,9 @@ export function createChainBackedSettler(
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < lostTxTimeoutMs) {
-        let receipt: Awaited<ReturnType<typeof options.publicClient.getTransactionReceipt>>;
+        let receipt: Awaited<
+          ReturnType<typeof options.publicClient.getTransactionReceipt>
+        >;
         try {
           receipt = await options.publicClient.getTransactionReceipt({
             hash: transactionHash,
@@ -265,6 +267,10 @@ export function createChainBackedSettler(
 
       await emitLost(options, transactionHash, meta);
       pending.delete(transactionHash);
+      throw new SettlementLostError(
+        transactionHash,
+        `settlement lost (timeout ${lostTxTimeoutMs}ms)`,
+      );
     },
   };
 }

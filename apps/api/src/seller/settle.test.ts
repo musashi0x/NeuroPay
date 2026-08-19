@@ -115,4 +115,49 @@ describe("settle - classification by cause", () => {
     await queue.drain();
     expect(queue.inFlight()).toBe(0);
   });
+
+  it("invokes onConfirmed after a successful confirmation", async () => {
+    const store = newLedger();
+    const settler = createInMemorySettler({ defaultBehavior: "confirm" });
+    const confirmed: string[] = [];
+    const queue = createSettlementQueue({
+      settler,
+      store,
+      hooks: {
+        onConfirmed: (s) => {
+          confirmed.push(s.nonce);
+        },
+      },
+    });
+
+    await queue.enqueue({ ...baseInput, nonce: "hook-ok" });
+    await queue.drain();
+    expect(confirmed).toEqual(["hook-ok"]);
+  });
+
+  it("invokes onFailed and does not invoke onConfirmed on revert", async () => {
+    const store = newLedger();
+    const settler = createInMemorySettler({ defaultBehavior: "revert" });
+    const confirmed: string[] = [];
+    const failed: string[] = [];
+    const queue = createSettlementQueue({
+      settler,
+      store,
+      hooks: {
+        onConfirmed: (s) => {
+          confirmed.push(s.nonce);
+        },
+        onFailed: (s, failure) => {
+          failed.push(`${s.nonce}:${failure.classification}`);
+        },
+      },
+    });
+
+    await expect(
+      queue.enqueue({ ...baseInput, nonce: "hook-fail" }),
+    ).rejects.toBeInstanceOf(SettlementRevertedError);
+    await queue.drain();
+    expect(confirmed).toEqual([]);
+    expect(failed).toEqual(["hook-fail:settlement-reverted"]);
+  });
 });

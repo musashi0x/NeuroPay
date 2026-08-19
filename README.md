@@ -109,19 +109,19 @@ actual settlement — follow the
 
 The repository is mid-build. What the running app does and does not do:
 
-| Area                                               | State                                                                          |
-| -------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                               |
-| Buyer payment client (`fetchWithX402`)             | Built and tested, wired into no running process — the demo script stands in    |
-| Signature verification                             | Stubbed: the composition root accepts every envelope                           |
-| Settlement                                         | In-memory settler; no transaction is submitted                                 |
-| On-chain revoke                                    | Not wired into the API (it needs the admin key the API deliberately lacks)     |
-| Payment crediting the meter                        | `recordSettle` exists but nothing calls it, so `accruedUnpaid` never decreases |
+| Area                                               | State                                                                                                            |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                 |
+| Buyer payment client (`fetchWithX402`)             | Built and tested, wired into no running process — the demo script stands in                                      |
+| Signature verification                             | Production runtime uses ERC-1271 via Permit2; tests inject a stub verifier                                       |
+| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory                         |
+| On-chain revoke                                    | Not wired into the API (it needs the admin key the API deliberately lacks)                                       |
+| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot |
 
-The last one is worth knowing before you read the numbers: because
-payments never credit the meter, each 402 demands the full running total
-again, and a long demo run shows the buyer paying far more than it
-consumed.
+Confirmed settlements now credit the meter, so a 402 after a successful
+settle demands only newly accrued unpaid cost. Failed settlements do not
+credit the meter and keep the exposure slot reserved until operator
+retry (P1) or process restart.
 
 One naming inconsistency: the product copy says USDC, while
 `.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
