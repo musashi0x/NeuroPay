@@ -8,7 +8,10 @@ import { createInMemorySettler } from "../seller/settle.js";
 import { IS_VALID_SIGNATURE_MAGIC } from "../seller/verify.js";
 import { createApp } from "../app.js";
 import { reviveBigints, toJsonSafe } from "../json.js";
-import { createConsoleService } from "./service.js";
+import {
+  createConsoleService,
+  type CreateConsoleServiceInput,
+} from "./service.js";
 
 const TOKEN = "0x337610d27c682e347c9cd60bd4b3b107c9d34ddd" as Address;
 const WALLET = "0x1111111111111111111111111111111111111111" as Address;
@@ -65,7 +68,11 @@ function session(overrides: Partial<PersistedSession> = {}): PersistedSession {
   };
 }
 
-function harness() {
+function harness(
+  overrides: Partial<
+    Pick<CreateConsoleServiceInput, "performRevoke" | "performRetryRevoke">
+  > = {},
+) {
   const cfg = config();
   const sessions = new SessionStore();
   sessions.save(session());
@@ -95,6 +102,7 @@ function harness() {
     ledger,
     seller,
     now: () => NOW,
+    ...overrides,
   });
   const app = createApp({
     console: consoleService,
@@ -210,6 +218,100 @@ describe("console API", () => {
     expect(streams.streams[0]?.endReason).toBe("session-revoked");
   });
 
+  it("reports on-chain revoke success from a wired performRevoke", async () => {
+    const { app, sessions } = harness({
+      performRevoke: async (persisted) => ({
+        local: { revoked: sessions.remove(persisted.walletAddress) },
+        onChain: {
+          revoked: true,
+          status: "CONFIRMED",
+          transactionHash: ("0x" + "44".repeat(32)) as Hex,
+        },
+      }),
+    });
+    const response = await app.request("/v1/session/revoke", {
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      local: { revoked: boolean };
+      onChain: { revoked: boolean; status: string | null };
+    };
+    expect(body.local.revoked).toBe(true);
+    expect(body.onChain.revoked).toBe(true);
+    expect(body.onChain.status).toBe("CONFIRMED");
+    expect(sessions.list()).toHaveLength(0);
+  });
+
+  it("reports on-chain revoke failure distinctly from local success", async () => {
+    const { app, sessions } = harness({
+      performRevoke: async (persisted) => ({
+        local: { revoked: sessions.remove(persisted.walletAddress) },
+        onChain: { revoked: false, status: "FAILED", transactionHash: null },
+      }),
+    });
+    const response = await app.request("/v1/session/revoke", {
+      method: "POST",
+    });
+    const body = (await response.json()) as {
+      local: { revoked: boolean };
+      onChain: { revoked: boolean; status: string | null };
+    };
+    expect(body.local.revoked).toBe(true);
+    expect(body.onChain.revoked).toBe(false);
+    expect(body.onChain.status).toBe("FAILED");
+    expect(sessions.list()).toHaveLength(0);
+  });
+
+  it("retries a failed on-chain revoke against the cached snapshot and clears it on success", async () => {
+    let attempts = 0;
+    const { app, sessions } = harness({
+      performRevoke: async (persisted) => ({
+        local: { revoked: sessions.remove(persisted.walletAddress) },
+        onChain: { revoked: false, status: "FAILED", transactionHash: null },
+      }),
+      performRetryRevoke: async () => {
+        attempts += 1;
+        return {
+          local: { revoked: true },
+          onChain: {
+            revoked: true,
+            status: "CONFIRMED",
+            transactionHash: ("0x" + "55".repeat(32)) as Hex,
+          },
+        };
+      },
+    });
+
+    await app.request("/v1/session/revoke", { method: "POST" });
+    const retryResponse = await app.request("/v1/session/revoke/retry", {
+      method: "POST",
+    });
+    expect(retryResponse.status).toBe(200);
+    const retryBody = (await retryResponse.json()) as {
+      onChain: { revoked: boolean; status: string | null };
+    };
+    expect(attempts).toBe(1);
+    expect(retryBody.onChain.revoked).toBe(true);
+    expect(retryBody.onChain.status).toBe("CONFIRMED");
+    expect(sessions.list()).toHaveLength(0);
+
+    // Retrying again with nothing pending 404s rather than re-submitting.
+    const secondRetry = await app.request("/v1/session/revoke/retry", {
+      method: "POST",
+    });
+    expect(secondRetry.status).toBe(404);
+    expect(attempts).toBe(1);
+  });
+
+  it("404s a retry when there is nothing pending", async () => {
+    const { app } = harness();
+    const response = await app.request("/v1/session/revoke/retry", {
+      method: "POST",
+    });
+    expect(response.status).toBe(404);
+  });
+
   it("pushes a live snapshot without a reload", async () => {
     const { consoleService, seller } = harness();
     const seen: string[] = [];
@@ -222,6 +324,20 @@ describe("console API", () => {
     stop();
     expect(seen.length).toBeGreaterThan(0);
     expect(seen[0]).toBeTruthy();
+  });
+
+  it("close() aborts registered SSE connections and drops subscribers", () => {
+    const { consoleService } = harness();
+    let aborted = false;
+    const stop = consoleService.subscribe(() => {
+      /* live listener */
+    });
+    consoleService.registerSseAbort(() => {
+      aborted = true;
+    });
+    consoleService.close();
+    expect(aborted).toBe(true);
+    stop();
   });
 
   it("never defaults CORS to * and never returns secrets", async () => {

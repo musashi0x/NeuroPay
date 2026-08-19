@@ -11,7 +11,6 @@ import {
   computeWindowSpend,
   fraction,
   recordSessionRevoked,
-  recordStreamEnded,
   type LedgerStore,
 } from "@neuro-pay/ledger";
 import type {
@@ -47,8 +46,14 @@ export type ConsoleService = {
   getBudget(): Promise<BudgetState | null>;
   snapshot(): Promise<ConsoleSnapshot>;
   revoke(): Promise<RevokeResult>;
+  /** Resubmit the on-chain stage of a revoke whose first attempt failed. */
+  retryRevoke(): Promise<RevokeResult>;
   subscribe(listener: (event: ConsoleLiveEvent) => void): () => void;
   notify(): void;
+  /** Abort live SSE connections and drop subscribers. */
+  close(): void;
+  /** Register a closer invoked by `close()` so SSE handlers can abort. */
+  registerSseAbort(abort: () => void): () => void;
 };
 
 export type CreateConsoleServiceInput = {
@@ -59,6 +64,13 @@ export type CreateConsoleServiceInput = {
   now?: () => number;
   resolveStatus?: (session: PersistedSession) => Promise<SessionStatus>;
   performRevoke?: (session: PersistedSession) => Promise<RevokeResult>;
+  /**
+   * Resubmit the on-chain stage only, given the persisted snapshot from
+   * the failed attempt (the store no longer has the record — local
+   * revocation already removed it). `local.revoked` on the result is
+   * expected to be `true`, since the local stage isn't repeated.
+   */
+  performRetryRevoke?: (session: PersistedSession) => Promise<RevokeResult>;
 };
 
 const PERIOD_SECONDS: Record<string, number> = {
@@ -75,6 +87,14 @@ export function createConsoleService(
 ): ConsoleService {
   const nowMs = input.now ?? Date.now;
   const listeners = new Set<(event: ConsoleLiveEvent) => void>();
+  const sseAborts = new Set<() => void>();
+  /**
+   * The persisted snapshot of a session whose local revoke succeeded but
+   * on-chain revoke did not, kept so `retryRevoke()` can resubmit without
+   * a store lookup (the record is already gone from the store). Cleared
+   * once the on-chain stage confirms.
+   */
+  let pendingRevoke: PersistedSession | undefined;
 
   const service: ConsoleService = {
     async getSession() {
@@ -125,20 +145,8 @@ export function createConsoleService(
             onChain: { revoked: false, status: null, transactionHash: null },
           };
 
-      const ended = input.seller?.endAll("session-revoked") ?? [];
-      for (const streamId of ended) {
-        await recordStreamEnded({
-          store: input.ledger,
-          ctx: {
-            streamId,
-            sessionPublicKey: persisted.publicKey,
-            chainId: input.config.chain.chainId,
-            token: input.config.chain.token,
-            tokenDecimals: input.config.chain.tokenDecimals,
-          },
-          reason: "session-revoked",
-        });
-      }
+      input.seller?.endAll("session-revoked");
+      pendingRevoke = result.onChain.revoked ? undefined : persisted;
 
       await recordSessionRevoked({
         store: input.ledger,
@@ -149,6 +157,35 @@ export function createConsoleService(
         stage: result.onChain.revoked ? "both" : "local",
         transactionHash: result.onChain.transactionHash,
         detail: `local=${result.local.revoked} onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
+      });
+
+      service.notify();
+      return result;
+    },
+
+    async retryRevoke() {
+      const snapshot = pendingRevoke;
+      if (!snapshot) {
+        throw new ConsoleNotFoundError("no pending on-chain revoke to retry");
+      }
+      if (!input.performRetryRevoke) {
+        throw new Error(
+          "on-chain revoke retry is not wired in this environment",
+        );
+      }
+
+      const result = await input.performRetryRevoke(snapshot);
+      pendingRevoke = result.onChain.revoked ? undefined : snapshot;
+
+      await recordSessionRevoked({
+        store: input.ledger,
+        sessionPublicKey: snapshot.publicKey,
+        chainId: input.config.chain.chainId,
+        token: input.config.chain.token,
+        tokenDecimals: input.config.chain.tokenDecimals,
+        stage: result.onChain.revoked ? "both" : "local",
+        transactionHash: result.onChain.transactionHash,
+        detail: `retry local=${result.local.revoked} onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
       });
 
       service.notify();
@@ -167,6 +204,19 @@ export function createConsoleService(
         const event: ConsoleLiveEvent = { type: "snapshot", snapshot };
         for (const listener of listeners) listener(event);
       });
+    },
+
+    registerSseAbort(abort) {
+      sseAborts.add(abort);
+      return () => {
+        sseAborts.delete(abort);
+      };
+    },
+
+    close() {
+      for (const abort of sseAborts) abort();
+      sseAborts.clear();
+      listeners.clear();
     },
   };
 

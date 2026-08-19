@@ -85,6 +85,33 @@ export type RevokeSessionInput = {
   adminSigner: Signer;
 };
 
+/** The on-chain-only outcome, shared by the first attempt and any retry. */
+export type OnChainRevokeOutcome = {
+  onChainRevoked: boolean;
+  onChainStatus: OnChainRevokeStatus | null;
+  onChainTransactionHash: Hex | null;
+};
+
+export type RetryOnChainRevokeInput = {
+  /** The Altana client, used for the on-chain revoke call. */
+  client: Client;
+  /** The wallet the session acts on. */
+  wallet: Wallet;
+  /** The admin signer — same authority that did the grant. */
+  adminSigner: Signer;
+  /**
+   * The persisted session snapshot captured at the time local revocation
+   * removed it from the store. The store no longer has this record — a
+   * retry cannot re-read it — so the caller (the console composition
+   * root) is responsible for holding onto the snapshot from the first
+   * `revokeSession` call.
+   */
+  session: Pick<
+    PersistedSession,
+    "walletAddress" | "publicKey" | "permissions" | "expiry"
+  >;
+};
+
 /**
  * Revoke a session.
  *
@@ -122,54 +149,90 @@ export async function revokeSession(
   // subsequent payment attempts cannot resolve a signer for this wallet.
   const localRevoked = store.remove(input.wallet.address);
 
-  // Stage 2 — on-chain. The SDK accepts a Session or a publicKey. We
-  // rebuild a minimal Session from the persisted record because the
-  // signer half is intentionally absent from the persisted shape — local
-  // revocation already stopped signing, so on-chain revocation only
-  // needs the public key.
+  const onChain = await submitOnChainRevoke(
+    input.client,
+    input.wallet,
+    input.adminSigner,
+    persisted,
+  );
+
+  return {
+    localRevoked,
+    ...onChain,
+    revoked: localRevoked && onChain.onChainRevoked,
+  };
+}
+
+/**
+ * Retry the on-chain stage only.
+ *
+ * Local revocation is not retried — it is idempotent, already happened,
+ * and the store no longer has the record to remove a second time. This
+ * resubmits `revokeSession` against the chain using the persisted
+ * snapshot the caller captured from the failed attempt, so a dropped or
+ * reverted relay submission can be retried without leaking the local
+ * store's state.
+ */
+export async function retryOnChainRevoke(
+  input: RetryOnChainRevokeInput,
+): Promise<OnChainRevokeOutcome> {
+  return submitOnChainRevoke(
+    input.client,
+    input.wallet,
+    input.adminSigner,
+    input.session,
+  );
+}
+
+async function submitOnChainRevoke(
+  client: Client,
+  wallet: Wallet,
+  adminSigner: Signer,
+  session: Pick<
+    PersistedSession,
+    "walletAddress" | "publicKey" | "permissions" | "expiry"
+  >,
+): Promise<OnChainRevokeOutcome> {
+  // The SDK accepts a Session or a publicKey. We rebuild a minimal
+  // Session from the persisted record because the signer half is
+  // intentionally absent from the persisted shape — local revocation
+  // already stopped signing, so on-chain revocation only needs the
+  // public key.
   const sessionForSdk: Session = {
-    walletAddress: persisted.walletAddress,
+    walletAddress: session.walletAddress,
     // The signer is not required by the on-chain revoke (the admin
     // signer carries the authority), but the SDK's `Session` type
-    // expects one. We pass the admin signer — revocation is a
+    // expects one. We pass the admin signer — revocation is an
     // admin-signed action and the SDK uses it.
-    signer: input.adminSigner,
-    publicKey: persisted.publicKey,
-    permissions: persisted.permissions,
-    expiry: persisted.expiry,
+    signer: adminSigner,
+    publicKey: session.publicKey,
+    permissions: session.permissions,
+    expiry: session.expiry,
   };
 
-  let onChainStatus: OnChainRevokeStatus | null = null;
-  let onChainTransactionHash: Hex | null = null;
-  let onChainRevoked = false;
-
   try {
-    const result: ExecuteResult = await input.client.revokeSession({
-      wallet: input.wallet,
-      signer: input.adminSigner,
+    const result: ExecuteResult = await client.revokeSession({
+      wallet,
+      signer: adminSigner,
       session: sessionForSdk,
     });
-    onChainStatus = result.status;
-    onChainTransactionHash = result.transactionHash ?? null;
     // The spec is explicit: a "FAILED" status is a failure, not a
     // success. Anything else (PENDING, CONFIRMED) is treated as
     // on-chain revoked being true. PENDING is reported honestly — the
     // caller can poll the chain or the relay to confirm.
-    onChainRevoked = result.status !== "FAILED";
+    return {
+      onChainStatus: result.status,
+      onChainTransactionHash: result.transactionHash ?? null,
+      onChainRevoked: result.status !== "FAILED",
+    };
   } catch {
     // A thrown on-chain call is the same outcome as a "FAILED" status
     // for our purposes: the local stage is intact, the on-chain stage
     // did not complete, and the caller can retry.
-    onChainRevoked = false;
-    onChainStatus = null;
-    onChainTransactionHash = null;
+    return {
+      onChainRevoked: false,
+      onChainStatus: null,
+      onChainTransactionHash: null,
+    };
   }
-
-  return {
-    localRevoked,
-    onChainRevoked,
-    onChainStatus,
-    onChainTransactionHash,
-    revoked: localRevoked && onChainRevoked,
-  };
 }

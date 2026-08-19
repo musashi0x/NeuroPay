@@ -13,7 +13,11 @@
  * `reviveWire` expects back.
  */
 import { Hono } from "hono";
-import type { Seller, StreamOpenResponse } from "../../seller/index.js";
+import {
+  SellerUnavailableError,
+  type Seller,
+  type StreamOpenResponse,
+} from "../../seller/index.js";
 import { toJsonSafe } from "../../json.js";
 
 export type OpenStreamDeps = {
@@ -26,11 +30,20 @@ export function openStreamRoute(deps: OpenStreamDeps): Hono {
 
   app.post("/v1/streams", async (c) => {
     const requestUrl = c.req.url;
-    const response: StreamOpenResponse = deps.seller.openStream({
-      requestUrl,
-    });
-
-    return c.json(toJsonSafe(response), 200);
+    try {
+      const response: StreamOpenResponse = deps.seller.openStream({
+        requestUrl,
+      });
+      return c.json(toJsonSafe(response), 200);
+    } catch (err) {
+      if (err instanceof SellerUnavailableError) {
+        return c.json(
+          { error: { message: err.message, reason: err.reason } },
+          503,
+        );
+      }
+      throw err;
+    }
   });
 
   return app;

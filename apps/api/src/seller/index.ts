@@ -21,7 +21,12 @@ import {
   type Clock,
   type MeteringConfig,
 } from "@neuro-pay/metering";
-import { type LedgerStore } from "@neuro-pay/ledger";
+import {
+  recordStreamAbandoned,
+  recordStreamEnded,
+  recordStreamOpened,
+  type LedgerStore,
+} from "@neuro-pay/ledger";
 import type {
   Address,
   Hex,
@@ -50,6 +55,7 @@ import {
   buildReplayResponse,
   type IdempotencyIndex,
   createIdempotencyIndex,
+  loadIdempotencyRecord,
   recordSegmentDelivery,
   recordVerification,
 } from "./idempotency.js";
@@ -65,7 +71,10 @@ import {
   type SettlementInput,
   type SettlementQueue,
   createSettlementQueue,
+  settlementIntentFromInput,
 } from "./settle.js";
+import { attachSettlementHooks } from "./settlement-hooks.js";
+import { logger } from "../logger.js";
 import {
   type PriceRegistry,
   bumpPriceSheet,
@@ -110,7 +119,17 @@ export type SellerOutcome =
       classification: PaymentFailureClassification;
       detail: string;
       resource: string;
-    };
+    }
+  | { kind: "unavailable"; status: 503; reason: "shutting-down" };
+
+/** Thrown by `openStream` after `shutdown()` has started. */
+export class SellerUnavailableError extends Error {
+  readonly reason = "shutting-down" as const;
+  constructor(message: string = "seller is shutting down") {
+    super(message);
+    this.name = "SellerUnavailableError";
+  }
+}
 
 /**
  * The request the seller answers. It deliberately is HTTP-agnostic so the
@@ -155,6 +174,22 @@ export type Seller = {
   };
   /** Drain all pending settlements. */
   drainSettlements(): Promise<void>;
+  /**
+   * Resume pending/submitted settlement intents from the durable outbox.
+   * Call once at process start.
+   */
+  reconcileSettlements(): Promise<import("./settle.js").ReconciliationReport>;
+  /** Operator recovery: resubmit a failed settlement intent. */
+  retrySettlement(nonce: string): Promise<{ transactionHash: Hex }>;
+  /** False after `shutdown()`; open and next-segment refuse new work. */
+  isAccepting(): boolean;
+  /**
+   * Stop new delivery, end leftover streams, drain the settlement
+   * outbox. Does not close the ledger — the runtime does that after.
+   */
+  shutdown(): Promise<void>;
+  /** End idle or expired in-memory streams and record `stream.abandoned`. */
+  sweepAbandoned(): Promise<string[]>;
   /** Console inspection: every known stream without the producer callback. */
   inspectStreams(): StreamInspection[];
   /** End every active stream. Used by the kill switch. */
@@ -194,6 +229,11 @@ export type CreateSellerInput = {
   now?: () => IsoTimestamp;
   /** Optional explicit price registry; tests override. */
   priceRegistry?: PriceRegistry;
+  /**
+   * Seconds without activity before `sweepAbandoned` ends a stream.
+   * Defaults to the stream TTL.
+   */
+  idleTtlSeconds?: number;
 };
 
 /** Build a fully composed seller. */
@@ -237,7 +277,54 @@ export function createSeller(input: CreateSellerInput): Seller {
   const queue: SettlementQueue = createSettlementQueue({
     settler: input.settler,
     store: input.store,
+    hooks: attachSettlementHooks({
+      streams,
+      exposure,
+      clock,
+    }),
   });
+  const enqueued = new Set<Promise<unknown>>();
+  let accepting = true;
+  const idleTtlSeconds =
+    input.idleTtlSeconds ?? input.config.streamTtlSeconds ?? 3600;
+
+  function streamCtx(streamId: string) {
+    return {
+      streamId,
+      sessionPublicKey: null as Hex | null,
+      chainId: input.config.chainId,
+      token: input.config.token,
+      tokenDecimals: input.config.tokenDecimals,
+    };
+  }
+
+  function noteClosed(
+    streamId: string,
+    reason: StreamEndReason,
+    kind: "ended" | "abandoned",
+    detail?: string,
+  ): Promise<void> {
+    const write =
+      kind === "abandoned" ? recordStreamAbandoned : recordStreamEnded;
+    return write({
+      store: input.store,
+      ctx: streamCtx(streamId),
+      reason,
+      ...(detail !== undefined ? { detail } : {}),
+    }).then(
+      () => undefined,
+      (err: unknown) => {
+        logger.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            streamId,
+            reason,
+          },
+          "failed to record stream close",
+        );
+      },
+    );
+  }
 
   /**
    * Close every active stream on a price change (5.10). The price
@@ -248,6 +335,7 @@ export function createSeller(input: CreateSellerInput): Seller {
     const ended: StreamOpenResponse[] = [];
     for (const record of activeStreams()) {
       streams.end(record.id, "price-changed");
+      noteClosed(record.id, "price-changed", "ended");
       ended.push({
         streamId: record.id,
         priceSheet: record.priceSheet,
@@ -291,6 +379,7 @@ export function createSeller(input: CreateSellerInput): Seller {
    */
   const seller: Seller = {
     openStream({ requestUrl, clock: callerClock }) {
+      if (!accepting) throw new SellerUnavailableError();
       const useClock = callerClock ?? clock;
       const openOptions = {
         priceSheet: priceRegistry.current,
@@ -306,22 +395,63 @@ export function createSeller(input: CreateSellerInput): Seller {
       };
       const response = streams.open(openOptions);
       rememberActive(response.streamId);
+      void recordStreamOpened({
+        store: input.store,
+        ctx: streamCtx(response.streamId),
+      }).catch((err: unknown) => {
+        logger.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            streamId: response.streamId,
+          },
+          "failed to record stream.opened",
+        );
+      });
       void requestUrl;
       return response;
     },
 
     async nextSegment(req: SegmentRequest): Promise<SellerOutcome> {
+      if (!accepting) {
+        return { kind: "unavailable", status: 503, reason: "shutting-down" };
+      }
       const useClock = req.clock ?? clock;
       const streamId = req.streamId;
       if (!streamId) {
         return { kind: "not-found", status: 404, reason: "missing stream id" };
       }
       const record = streams.get(streamId);
-      if (!record || record.endReason !== null) {
+      if (!record) {
         return {
           kind: "not-found",
           status: 404,
           reason: "stream ended or unknown",
+        };
+      }
+      if (record.endReason === "session-revoked") {
+        return {
+          kind: "rejected",
+          status: 402,
+          classification: "session-revoked",
+          detail: "session revoked",
+          resource: req.requestUrl,
+        };
+      }
+      if (record.endReason !== null) {
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "stream ended or unknown",
+        };
+      }
+      streams.touch(streamId);
+      if (Date.parse(record.expiresAt) <= useClock.now()) {
+        streams.end(streamId, "abandoned");
+        noteClosed(streamId, "abandoned", "abandoned", "stream ttl elapsed");
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "stream abandoned",
         };
       }
 
@@ -394,6 +524,13 @@ export function createSeller(input: CreateSellerInput): Seller {
           kind: "delivered",
           status: 200,
           body: buildReplayResponse(parsed.nonce!, replay.record),
+        };
+      }
+      if (replay.kind === "incomplete") {
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "verified nonce is missing a delivery record",
         };
       }
 
@@ -509,8 +646,8 @@ export function createSeller(input: CreateSellerInput): Seller {
       });
 
       // Async settlement. Don't await — return the segment immediately.
-      // The exposure counter is decremented by the settle.onConfirm hook
-      // (wired outside this composition root via `release()`).
+      // Exposure is released only on confirmation (via settlement hooks).
+      // Failed or lost settlements keep the slot as unrecovered exposure.
       const settlementInput: SettlementInput = {
         nonce: parsed.nonce!,
         streamId,
@@ -522,21 +659,23 @@ export function createSeller(input: CreateSellerInput): Seller {
         payer: parsed.from,
         payTo: input.config.payTo,
       };
-      // The queue's submitAwaitable signature varies; we use the
-      // helper that returns the tx hash and triggers the
-      // confirm-and-release flow via the catch path.
-      queue
+      // Persist the intent before returning 200 so a crash cannot lose
+      // the work between delivery and submitSettle.
+      await input.store.putIntent(settlementIntentFromInput(settlementInput));
+      const submitted = queue
         .enqueue(settlementInput)
-        .catch(() => {
-          // Settlement failure is already recorded by the queue; the
-          // exposure counter is decremented in the confirm-or-fail path.
-        })
-        .then(() => {
-          exposure.release();
-        })
-        .catch(() => {
-          exposure.release();
+        .catch((cause: unknown) => {
+          logger.warn(
+            {
+              err: cause instanceof Error ? cause.message : String(cause),
+              nonce: settlementInput.nonce,
+              streamId,
+            },
+            "settlement enqueue failed; exposure held as unrecovered",
+          );
         });
+      enqueued.add(submitted);
+      void submitted.finally(() => enqueued.delete(submitted));
 
       return {
         kind: "delivered",
@@ -571,7 +710,20 @@ export function createSeller(input: CreateSellerInput): Seller {
     },
 
     async drainSettlements() {
+      await Promise.allSettled(Array.from(enqueued));
       await queue.drain();
+    },
+
+    async reconcileSettlements() {
+      const report = await queue.reconcile();
+      for (let i = 0; i < report.resumed.length; i += 1) {
+        exposure.tryAcquire();
+      }
+      return report;
+    },
+
+    retrySettlement(nonce) {
+      return queue.retry(nonce);
     },
 
     inspectStreams() {
@@ -591,9 +743,28 @@ export function createSeller(input: CreateSellerInput): Seller {
       for (const record of streams.list()) {
         if (record.endReason !== null) continue;
         streams.end(record.id, reason);
+        noteClosed(record.id, reason, "ended");
         ended.push(record.id);
       }
       return ended;
+    },
+
+    isAccepting() {
+      return accepting;
+    },
+
+    async shutdown() {
+      accepting = false;
+      this.endAll("abandoned");
+      await this.drainSettlements();
+    },
+
+    async sweepAbandoned() {
+      const ended = streams.sweepAbandoned(idleTtlSeconds);
+      await Promise.all(
+        ended.map((record) => noteClosed(record.id, "abandoned", "abandoned")),
+      );
+      return ended.map((record) => record.id);
     },
   };
 
@@ -663,8 +834,11 @@ function readDemandAmount(
 }
 
 /**
- * Replay detection: same nonce → same segment, no new cost. Reads via
- * the in-memory index (fast path) and falls back to the ledger.
+ * Replay detection: same nonce → same segment, no new cost.
+ *
+ * Prefers the immutable delivery record in the ledger so a cold
+ * in-memory index still returns the original payload. A verified
+ * nonce with no delivery record is `incomplete` — never a stub.
  */
 async function isReplay(
   nonce: string | null,
@@ -673,31 +847,18 @@ async function isReplay(
 ): Promise<
   | { kind: "fresh" }
   | { kind: "replay"; record: import("./idempotency.js").IdempotencyRecord }
+  | { kind: "incomplete" }
 > {
   if (nonce === null) return { kind: "fresh" };
-  const cached = index.get(nonce);
-  if (cached) return { kind: "replay", record: cached };
-  // Fall through to ledger on a cold cache.
+  const record = await loadIdempotencyRecord(store, index, nonce);
+  if (record !== null && record.sequence > 0) {
+    return { kind: "replay", record };
+  }
   const { isNonceAlreadyVerified } = await import("@neuro-pay/ledger");
-  const verified = await isNonceAlreadyVerified(store, nonce);
-  if (!verified) return { kind: "fresh" };
-  // Rebuild a stub record from the ledger (no segment payload); the
-  // route layer falls back to a 404 if no segment was recorded under
-  // the nonce (which is the standard case if a `segment.delivered`
-  // entry isn't required).
-  return {
-    kind: "replay",
-    record: {
-      nonce,
-      streamId: "",
-      sequence: 0,
-      data: "",
-      secondsDelivered: 0,
-      unitsDelivered: 0,
-      ledgerEntryId: "",
-      ledgerTimestamp: new Date(0).toISOString(),
-    },
-  };
+  if (await isNonceAlreadyVerified(store, nonce)) {
+    return { kind: "incomplete" };
+  }
+  return { kind: "fresh" };
 }
 
 export { computeLocalLimit } from "@neuro-pay/metering";

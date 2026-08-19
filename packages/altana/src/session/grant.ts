@@ -73,6 +73,13 @@ export type GrantSessionInput = {
    * pin expiry; defaults to `Math.floor(Date.now() / 1000)`.
    */
   now?: number;
+  /**
+   * Operator-supplied session signer. When set, the grant registers this
+   * key on chain so a later buyer process can reconstruct the live
+   * `Session` from `SESSION_PRIVATE_KEY`. When omitted the SDK generates
+   * an ephemeral key that dies with this process.
+   */
+  sessionSigner?: Signer;
 };
 
 export type GrantedSession = {
@@ -163,6 +170,9 @@ export async function grantSession(
     signer: input.adminSigner,
     permissions: sdkPermissions,
     expiry,
+    ...(input.sessionSigner !== undefined
+      ? { sessionSigner: input.sessionSigner }
+      : {}),
   });
 
   // Project the SDK `Session` to our narrower `PersistedSession`. The

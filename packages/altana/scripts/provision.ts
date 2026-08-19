@@ -42,7 +42,11 @@ import { provisionWallet } from "../src/wallet.js";
 import { SessionStore } from "../src/session/store.js";
 import { grantSession } from "../src/session/grant.js";
 import { provisionRail } from "../src/rail.js";
-import { PERMIT2_ADDRESS, type CallPermission } from "@altananetwork/sdk";
+import {
+  PERMIT2_ADDRESS,
+  signerFromPrivateKey,
+  type CallPermission,
+} from "@altananetwork/sdk";
 import type { Address, Hex } from "@neuro-pay/types";
 
 /**
@@ -79,6 +83,15 @@ function parseAllowlist(envValue: string | undefined): CallPermission[] {
     );
   }
   return parsed as CallPermission[];
+}
+
+function readSessionPrivateKey(value: string): Hex {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error(
+      "SESSION_PRIVATE_KEY must be a 0x-prefixed 32-byte hex private key",
+    );
+  }
+  return value as Hex;
 }
 
 function asCallPermission(p: CallPermission): {
@@ -143,6 +156,22 @@ async function main(): Promise<void> {
     process.env["SESSION_STORE_PATH"] ?? ".data/session.json";
   mkdirSync(dirname(sessionStorePath), { recursive: true });
   const store = new SessionStore({ fileStorePath: sessionStorePath });
+  const sessionKey = process.env["SESSION_PRIVATE_KEY"]?.trim();
+  const sessionSigner =
+    sessionKey !== undefined && sessionKey.length > 0
+      ? signerFromPrivateKey(readSessionPrivateKey(sessionKey))
+      : undefined;
+  if (sessionSigner !== undefined) {
+    console.log(
+      "Using SESSION_PRIVATE_KEY as the session signer (re-usable by demo:real).",
+    );
+  } else {
+    console.log(
+      "No SESSION_PRIVATE_KEY set — the SDK will generate an ephemeral session key. " +
+        "A later `demo:real` process cannot sign unless you grant with SESSION_PRIVATE_KEY set.",
+    );
+  }
+
   const result = await grantSession(ctx.client, store, {
     wallet: { address: wallet.walletAddress } as never,
     adminSigner: wallet.adminSigner,
@@ -150,6 +179,7 @@ async function main(): Promise<void> {
     token: config.chain.token,
     tokenDecimals: config.chain.tokenDecimals,
     calls: allowlist,
+    ...(sessionSigner !== undefined ? { sessionSigner } : {}),
   });
   const grantTx = result.persisted.grantTransactionHash;
   console.log(

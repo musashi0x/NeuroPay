@@ -318,6 +318,58 @@ export async function recordStreamEnded(
   );
 }
 
+/** Record that a stream was abandoned (idle or past its TTL). */
+export async function recordStreamAbandoned(
+  input: StreamEndedInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("stream.abandoned", input, {
+      detail: input.detail ?? `stream abandoned (${input.reason})`,
+      amount: input.amount ?? null,
+    }),
+  );
+}
+
+export type SettlementRetryInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  detail?: string | null;
+};
+
+export type SettlementRecoveredInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  transactionHash?: Hex | null;
+  detail?: string | null;
+};
+
+/** Record an operator or startup retry of a settlement intent. */
+export async function recordSettlementRetry(
+  input: SettlementRetryInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("settlement.retry", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      detail: input.detail ?? "settlement retry",
+    }),
+  );
+}
+
+/** Record that a retried or reconciled settlement confirmed. */
+export async function recordSettlementRecovered(
+  input: SettlementRecoveredInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("settlement.recovered", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash ?? null,
+      detail: input.detail ?? "settlement recovered",
+    }),
+  );
+}
+
 /** Record an accrual tick. */
 export async function recordAccrual(
   input: AccrualRecordedInput,
@@ -493,5 +545,104 @@ export async function recordCorrection(
     overrides.timestamp === undefined
       ? base
       : { ...base, timestamp: overrides.timestamp },
+  );
+}
+
+/**
+ * P0 payment.settlement.* lifecycle.
+ *
+ * Distinct from the existing `settlement.*` events (which the in-memory
+ * settler has always used) so an operator that wants a single
+ * "the chain path wrote this" tag can grep just the `payment.settlement.*`
+ * namespace. Both are written by the real chain-backed settler so the
+ * exposure module (which reads `settlement.*`) keeps working unchanged
+ * while the P0 audit path can read `payment.settlement.*` directly.
+ *
+ * `payment.settlement.lost` is the timeout path: the chain never
+ * confirmed and the operator's reconciliation window has elapsed, so
+ * the in-memory slot must be released and a queryable marker left on
+ * the ledger so an out-of-band recovery can find the nonce.
+ */
+export type PaymentSettlementSubmittedInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  transactionHash: Hex;
+};
+
+export type PaymentSettlementConfirmedInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  transactionHash: Hex;
+};
+
+export type PaymentSettlementFailedInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  classification: PaymentFailureClassification;
+  transactionHash?: Hex | null;
+  detail?: string | null;
+  timestamp?: string;
+};
+
+export type PaymentSettlementLostInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  /** The tx hash that never confirmed; null if no tx was ever submitted. */
+  transactionHash?: Hex | null;
+  detail?: string | null;
+  timestamp?: string;
+};
+
+/** Record `payment.settlement.submitted`. */
+export async function recordPaymentSettlementSubmitted(
+  input: PaymentSettlementSubmittedInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("payment.settlement.submitted", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash,
+    }),
+  );
+}
+
+/** Record `payment.settlement.confirmed`. */
+export async function recordPaymentSettlementConfirmed(
+  input: PaymentSettlementConfirmedInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("payment.settlement.confirmed", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash,
+    }),
+  );
+}
+
+/** Record `payment.settlement.failed`. */
+export async function recordPaymentSettlementFailed(
+  input: PaymentSettlementFailedInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("payment.settlement.failed", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash ?? null,
+      classification: input.classification,
+    }),
+  );
+}
+
+/** Record `payment.settlement.lost` — the chain never confirmed before the timeout. */
+export async function recordPaymentSettlementLost(
+  input: PaymentSettlementLostInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("payment.settlement.lost", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash ?? null,
+      detail: input.detail ?? "settlement lost (timeout)",
+    }),
   );
 }

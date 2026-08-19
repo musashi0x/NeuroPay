@@ -95,6 +95,8 @@ export type StreamRecord = {
   /** Set when the stream transitions to ended. */
   endReason: StreamEndReason | null;
   endedAt: IsoTimestamp | null;
+  /** Last next-segment or open activity, used for idle sweep. */
+  lastActivityAt: IsoTimestamp;
 };
 
 /** Open a stream and return the wire response. */
@@ -118,6 +120,7 @@ export function openStream(input: OpenStreamInput): {
     meter: createMeterState(),
     endReason: null,
     endedAt: null,
+    lastActivityAt: now,
   };
   const response: StreamOpenResponse = {
     streamId: id,
@@ -175,6 +178,13 @@ export type StreamStore = {
   ): MeterState | null;
   /** Returns true when the stream is still serving segments. */
   isActive(streamId: string): boolean;
+  /** Mark activity so idle sweep does not collect this stream. */
+  touch(streamId: string): void;
+  /**
+   * End active streams past `expiresAt` or idle longer than
+   * `idleTtlSeconds`. Returns the records that were newly ended.
+   */
+  sweepAbandoned(idleTtlSeconds: number): StreamRecord[];
 };
 
 export type CreateStreamStoreOptions = {
@@ -252,6 +262,27 @@ export function createStreamStore(
     isActive(streamId) {
       const record = records.get(streamId);
       return record !== undefined && record.endReason === null;
+    },
+    touch(streamId) {
+      const record = records.get(streamId);
+      if (!record || record.endReason !== null) return;
+      record.lastActivityAt = now();
+    },
+    sweepAbandoned(idleTtlSeconds) {
+      const ts = now();
+      const nowMs = Date.parse(ts);
+      const idleMs = idleTtlSeconds * 1000;
+      const ended: StreamRecord[] = [];
+      for (const record of records.values()) {
+        if (record.endReason !== null) continue;
+        const expired = Date.parse(record.expiresAt) <= nowMs;
+        const idle = Date.parse(record.lastActivityAt) + idleMs <= nowMs;
+        if (!expired && !idle) continue;
+        record.endReason = "abandoned";
+        record.endedAt = ts;
+        ended.push(record);
+      }
+      return ended;
     },
   };
 }

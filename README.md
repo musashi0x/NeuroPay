@@ -109,19 +109,19 @@ actual settlement — follow the
 
 The repository is mid-build. What the running app does and does not do:
 
-| Area                                               | State                                                                          |
-| -------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                               |
-| Buyer payment client (`fetchWithX402`)             | Built and tested, wired into no running process — the demo script stands in    |
-| Signature verification                             | Stubbed: the composition root accepts every envelope                           |
-| Settlement                                         | In-memory settler; no transaction is submitted                                 |
-| On-chain revoke                                    | Not wired into the API (it needs the admin key the API deliberately lacks)     |
-| Payment crediting the meter                        | `recordSettle` exists but nothing calls it, so `accruedUnpaid` never decreases |
+| Area                                               | State                                                                                                            |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                 |
+| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)    |
+| Signature verification                             | Production runtime uses ERC-1271 via Permit2; tests inject a stub verifier                                       |
+| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory                         |
+| On-chain revoke                                    | Wired when `ADMIN_PRIVATE_KEY` + `RPC_URL` are set; local-only with a logged warning otherwise                   |
+| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot |
 
-The last one is worth knowing before you read the numbers: because
-payments never credit the meter, each 402 demands the full running total
-again, and a long demo run shows the buyer paying far more than it
-consumed.
+Confirmed settlements now credit the meter, so a 402 after a successful
+settle demands only newly accrued unpaid cost. Failed settlements do not
+credit the meter and keep the exposure slot reserved until operator
+retry (P1) or process restart.
 
 One naming inconsistency: the product copy says USDC, while
 `.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
@@ -205,13 +205,12 @@ Turbo caches test results, so an unchanged package reports `cached` and re-runs 
 
 ### Driving the payment loop (`pnpm demo`)
 
-The seller half of the loop runs in the API; the buyer half
-(`fetchWithX402` in `@neuro-pay/altana`) is wired into no process. Without
-a buyer, `GET /v1/streams/:id/next` returns a 402 that nobody answers, so
-the console reads a ledger nothing writes to and every panel stays empty.
+The seller half of the loop runs in the API. Without a buyer,
+`GET /v1/streams/:id/next` returns a 402 that nobody answers, so the
+console reads a ledger nothing writes to and every panel stays empty.
 
-`apps/api/scripts/demo-stream.ts` is the missing buyer for a demo. With the
-API running:
+`apps/api/scripts/demo-stream.ts` is the synthetic buyer for a demo. With
+the API running:
 
 ```bash
 pnpm --filter @neuro-pay/api demo                  # 20 segments
@@ -239,6 +238,23 @@ or settlement works. The witness fields (payTo, token, chainId, amount,
 deadline) are filled honestly, because the seller checks each one before
 the verifier ever runs.
 
+### Signed payments (`pnpm demo:real`)
+
+`apps/api/scripts/demo-real-signing.ts` is the buyer that actually signs.
+It loads a `PersistedSession`, attaches `SESSION_PRIVATE_KEY` as the
+store's `signerSource`, hydrates a live SDK session, and calls
+`fetchWithX402`.
+
+```bash
+# Grant with an operator-held session key so a later process can sign:
+SESSION_PRIVATE_KEY=0x... pnpm --filter @neuro-pay/altana provision
+SESSION_PRIVATE_KEY=0x... pnpm --filter @neuro-pay/api demo:real
+```
+
+The store never persists the private half. If you omit
+`SESSION_PRIVATE_KEY` at grant time, the SDK generates an ephemeral key
+that dies with the provision process and `demo:real` cannot sign.
+
 Prices must be non-zero or nothing is ever charged: `createSeller`
 defaults every price to zero, so accrual never reaches
 `SETTLEMENT_THRESHOLD` and no 402 is generated. Set `PRICE_PER_UNIT` (and
@@ -254,6 +270,12 @@ which the UI shows as `revoke failed with 404`. The store's only real
 writer is the provisioner, which needs an admin key, a funded wallet, and
 on-chain fees.
 
+`/v1/session`'s `status` field is also chain-backed whenever `RPC_URL` is
+set: it reads a live Keystore `isValidKey` check rather than only expiry
++ the local rail flag, so a session revoked from outside this process
+(another operator run, a different revoke call) shows up as `"revoked"`
+on the next poll.
+
 For console work, seed a fake record instead:
 
 ```bash
@@ -267,7 +289,9 @@ and has no signer behind it — nothing can sign a payment with it. Pass
 `--force` to overwrite an existing record, and `--wallet 0x…` to choose the
 address.
 
-Revoke against a seeded session returns exactly what the API can do today:
+Revoke against a seeded session without `ADMIN_PRIVATE_KEY` set returns
+the local-only stub — stage two never ran because there is no admin
+signer to run it with:
 
 ```json
 {
@@ -276,11 +300,13 @@ Revoke against a seeded session returns exactly what the API can do today:
 }
 ```
 
-The on-chain stage is not wired into the API: `revokeSession` needs the
-admin signer, and the API deliberately holds no admin key. Stage two is
-the provisioner's job today. The console reports the two stages
-separately, so this reads as "signing stopped, chain not yet updated"
-rather than a completed revoke.
+With `ADMIN_PRIVATE_KEY` + `RPC_URL` set, `POST /v1/session/revoke` drives
+the real two-stage flow: local removal, then `revokeSession` on chain. If
+the on-chain stage reports `"FAILED"` (or the relay call throws),
+`onChain.revoked` is `false` and the console keeps the failed snapshot in
+memory — `POST /v1/session/revoke/retry` resubmits stage two only, using
+that cached snapshot (the store record is already gone by then). A retry
+with nothing pending answers 404 instead of re-submitting.
 
 ### Testing the payment path by hand
 
@@ -292,7 +318,7 @@ To mount the payment routes, fill these in `apps/api/.env` (the rest already def
 | --------------------- | ----------------------------------------------------------------------- |
 | `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                  |
 | `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas |
-| `ADMIN_PRIVATE_KEY`   | Only for wallet creation, `grantSession`, rail provisioning, and revoke |
+| `ADMIN_PRIVATE_KEY`   | Wallet creation, `grantSession`, rail provisioning (provisioner script), and on-chain revoke (API, optional) |
 
 Use throwaway testnet-only keys. A leaked session key is bounded by the cap and expiry; a leaked admin key is total loss of the wallet. Then follow the [operator checklist](#operator-checklist-chain-97).
 

@@ -19,13 +19,28 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
 
 const shutdown = (signal: NodeJS.Signals) => {
   logger.info({ signal }, "shutting down");
+  const force = setTimeout(() => {
+    logger.error("shutdown timed out");
+    process.exit(1);
+  }, 10_000);
+  force.unref();
   server.close((err) => {
-    if (err) {
-      logger.error({ err }, "error during shutdown");
-      process.exit(1);
-    }
-    runtime?.close();
-    process.exit(0);
+    void (async () => {
+      try {
+        await runtime?.close();
+      } catch (closeErr) {
+        logger.error(
+          { err: closeErr instanceof Error ? closeErr : { value: closeErr } },
+          "error during runtime close",
+        );
+        process.exit(1);
+      }
+      if (err) {
+        logger.error({ err }, "error during shutdown");
+        process.exit(1);
+      }
+      process.exit(0);
+    })();
   });
 };
 

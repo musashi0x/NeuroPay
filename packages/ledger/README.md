@@ -54,6 +54,18 @@ separate column from `id`, so replays are independent of UUID ordering.
 precision, so `50n * 10n ** 18n` and `2n ** 64n` round-trip without
 loss.
 
+The same database also holds `delivery_records`: immutable segment
+payloads keyed by authorization nonce (`putDelivery` / `getDelivery`).
+First write wins. Accrued amounts travel as decimal TEXT like ledger
+`amount`.
+
+`settlement_intents` is the operational outbox (pending / submitted /
+confirmed / failed). Status is updated in place; the append-only event
+log remains the audit trail.
+
+Stream close and settlement recovery also write `stream.ended`,
+`stream.abandoned`, `settlement.retry`, and `settlement.recovered`.
+
 ## API surface
 
 ```ts

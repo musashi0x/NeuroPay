@@ -25,6 +25,12 @@
  */
 
 export type { AppendInput, LedgerStore, LedgerStoreOptions } from "./store.js";
+export type { DeliveryRecord } from "./delivery.js";
+export type {
+  SettlementIntent,
+  SettlementIntentPatch,
+  SettlementIntentStatus,
+} from "./outbox.js";
 export {
   KeyMaterialRejectedError,
   openLedgerStore,
@@ -46,12 +52,19 @@ export {
   recordPaymentRefused,
   recordPaymentSigned,
   recordPaymentVerified,
+  recordPaymentSettlementConfirmed,
+  recordPaymentSettlementFailed,
+  recordPaymentSettlementLost,
+  recordPaymentSettlementSubmitted,
   recordSegmentDelivered,
   recordSessionGranted,
   recordSessionRevoked,
   recordSettlementConfirmed,
   recordSettlementFailed,
+  recordSettlementRecovered,
+  recordSettlementRetry,
   recordSettlementSubmitted,
+  recordStreamAbandoned,
   recordStreamEnded,
   recordStreamOpened,
 } from "./events.js";
@@ -64,12 +77,18 @@ export type {
   PaymentRejectedInput,
   PaymentRefusedInput,
   PaymentSignedInput,
+  PaymentSettlementConfirmedInput,
+  PaymentSettlementFailedInput,
+  PaymentSettlementLostInput,
+  PaymentSettlementSubmittedInput,
   PaymentVerifiedInput,
   SegmentDeliveredInput,
   SessionGrantedInput,
   SessionRevokedInput,
   SettlementConfirmedInput,
   SettlementFailedInput,
+  SettlementRecoveredInput,
+  SettlementRetryInput,
   SettlementSubmittedInput,
   StreamEndedInput,
   StreamOpenedInput,

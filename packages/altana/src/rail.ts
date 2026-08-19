@@ -142,3 +142,10 @@ export async function provisionRail(
     approveCheckerTransactionHash: approveCheckerResult.transactionHash ?? null,
   };
 }
+
+/**
+ * The canonical Permit2 contract address on every supported chain.
+ * Re-exported from `@altananetwork/sdk` so the runtime can compose
+ * without depending on the SDK directly.
+ */
+export { PERMIT2_ADDRESS } from "@altananetwork/sdk";

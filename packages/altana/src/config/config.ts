@@ -11,35 +11,13 @@ import {
   type EnvSource,
 } from "./env.js";
 
-/** BNB Smart Chain testnet — the only chain this change targets. */
 export const DEFAULT_CHAIN_ID = 97;
-
-/** One day. Long enough for an unattended agent run, short enough to bound a leak. */
 export const DEFAULT_SESSION_LIFETIME_SECONDS = 86_400;
-
-/** The on-chain `spend` period the local budget window aligns to. */
 export const DEFAULT_SESSION_SPEND_PERIOD_SECONDS = 86_400;
-
-/** Local budget sits at 80% of the on-chain cap, leaving the cap as a backstop. */
 export const DEFAULT_BUDGET_MARGIN = 0.2;
-
-/** Bounds seller credit exposure on a slow or idle stream. */
 export const DEFAULT_TICK_INTERVAL_SECONDS = 60;
-
-/** Delivery stops at `settlementThreshold × this`, which is the seller's worst case. */
 export const DEFAULT_MAX_IN_FLIGHT_SETTLEMENTS = 3;
 
-/**
- * Reads the whole application configuration from the environment.
- *
- * Every required value that is missing or malformed throws a named
- * `ConfigError` subclass naming the variable. Callers are expected to let that
- * propagate and kill the process: a half-configured payment path is worse than
- * one that never started.
- *
- * `env` is injectable so the failure paths are testable without mutating
- * `process.env`.
- */
 export function loadAppConfig(env: EnvSource = process.env): AppConfig {
   return {
     chain: {
@@ -76,8 +54,6 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
         "SETTLER_PRIVATE_KEY",
         "EOA that submits permitWitnessTransferFrom and pays its gas",
       ),
-      // Absent by design in a running agent process: the admin key is needed
-      // only to create the wallet, grant, provision the rail, and revoke.
       adminPrivateKey: readOptionalPrivateKey(env, "ADMIN_PRIVATE_KEY"),
     },
     session: (() => {
@@ -101,11 +77,6 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
         min: 0,
         max: 36,
       });
-      // The operator-facing env var is whole-tokens ("10" or "0.5") for
-      // ergonomics — the decimals hazard is exactly the bug we want the
-      // config layer to absorb. Convert to smallest-units here so every
-      // downstream consumer (budget mirror, on-chain grant, console
-      // reporting) sees the same scale as the chain.
       const spendCapWhole = readWholeTokens(env, "SESSION_SPEND_CAP", {
         purpose:
           'per-period spend cap in whole tokens (e.g. "50" or "0.5"); converted to smallest units at config time',
@@ -128,14 +99,12 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
           "accrued amount that triggers a payment demand, in smallest token units",
       }),
       tickIntervalSeconds: readInteger(env, "TICK_INTERVAL_SECONDS", {
-        purpose:
-          "seconds since the last payment that trigger a demand regardless of accrual",
+        purpose: "seconds since the last payment that trigger a demand regardless of accrual",
         fallback: DEFAULT_TICK_INTERVAL_SECONDS,
         min: 1,
       }),
       maxInFlightSettlements: readInteger(env, "MAX_IN_FLIGHT_SETTLEMENTS", {
-        purpose:
-          "concurrent settlements the seller will carry before stopping delivery",
+        purpose: "concurrent settlements the seller will carry before stopping delivery",
         fallback: DEFAULT_MAX_IN_FLIGHT_SETTLEMENTS,
         min: 1,
       }),
