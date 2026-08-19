@@ -79,6 +79,10 @@ describe("idempotency - recordVerification + replay", () => {
       data: "abc",
       secondsDelivered: 7,
       unitsDelivered: 12,
+      accruedUnpaid: 210n,
+      totalAccrued: 210n,
+      streamEnded: false,
+      endReason: null,
       ledgerEntryId: "evt-1",
       ledgerTimestamp: "2024-01-01T00:00:00.000Z",
     });
@@ -92,8 +96,8 @@ describe("idempotency - recordVerification + replay", () => {
       streamEnded: false,
       endReason: null,
     });
-    expect(replay.accruedUnpaid).toBe(0n);
-    expect(replay.totalAccrued).toBe(0n);
+    expect(replay.accruedUnpaid).toBe(210n);
+    expect(replay.totalAccrued).toBe(210n);
   });
 
   it("recordSegmentDelivery updates the cached record to point at the actual delivered shape", async () => {
@@ -130,8 +134,8 @@ describe("idempotency - recordVerification + replay", () => {
         data: "world",
         secondsDelivered: 9,
         unitsDelivered: 30,
-        accruedUnpaid: 0n,
-        totalAccrued: 0n,
+        accruedUnpaid: 210n,
+        totalAccrued: 210n,
         streamEnded: false,
         endReason: null,
       },
@@ -147,6 +151,78 @@ describe("idempotency - recordVerification + replay", () => {
     expect(cached?.data).toBe("world");
     expect(cached?.secondsDelivered).toBe(9);
     expect(cached?.unitsDelivered).toBe(30);
+    expect(cached?.accruedUnpaid).toBe(210n);
+    expect(cached?.totalAccrued).toBe(210n);
+
+    const durable = await store.getDelivery("n-2");
+    expect(durable?.payload.data).toBe("world");
+    expect(durable?.payload.accruedUnpaid).toBe(210n);
+  });
+
+  it("replays the original payload from the ledger after the in-memory index is cleared", async () => {
+    const store = freshLedger();
+    const index = createIdempotencyIndex();
+
+    await recordVerification(
+      {
+        store,
+        index,
+        nonce: "n-cold",
+        streamId: "s-cold",
+        sessionPublicKey: null,
+        chainId: 97,
+        token: TOKEN,
+        tokenDecimals: 18,
+        authorizedAmount: 500n,
+      },
+      {
+        sequence: 1,
+        data: "payload",
+        secondsDelivered: 2,
+        unitsDelivered: 3,
+      },
+    );
+    await recordSegmentDelivery({
+      store,
+      index,
+      nonce: "n-cold",
+      segment: {
+        streamId: "s-cold",
+        sequence: 1,
+        data: "payload",
+        secondsDelivered: 2,
+        unitsDelivered: 3,
+        accruedUnpaid: 99n,
+        totalAccrued: 99n,
+        streamEnded: false,
+        endReason: null,
+      },
+      sessionPublicKey: null,
+      chainId: 97,
+      token: TOKEN,
+      tokenDecimals: 18,
+      authorizedAmount: 500n,
+    });
+
+    const cold = createIdempotencyIndex();
+    const duplicate = await recordVerification({
+      store,
+      index: cold,
+      nonce: "n-cold",
+      streamId: "s-cold",
+      sessionPublicKey: null,
+      chainId: 97,
+      token: TOKEN,
+      tokenDecimals: 18,
+      authorizedAmount: 500n,
+    });
+    expect(duplicate.kind).toBe("duplicate");
+    if (duplicate.kind !== "duplicate") return;
+    expect(duplicate.record.data).toBe("payload");
+    expect(duplicate.record.accruedUnpaid).toBe(99n);
+    expect(buildReplayResponse("n-cold", duplicate.record).totalAccrued).toBe(
+      99n,
+    );
   });
 
   it("index exposes the same nonce twice through list()", () => {
@@ -158,6 +234,10 @@ describe("idempotency - recordVerification + replay", () => {
       data: "",
       secondsDelivered: 0,
       unitsDelivered: 0,
+      accruedUnpaid: 0n,
+      totalAccrued: 0n,
+      streamEnded: false,
+      endReason: null,
       ledgerEntryId: "",
       ledgerTimestamp: new Date(0).toISOString(),
     });

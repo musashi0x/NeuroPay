@@ -30,8 +30,9 @@ import type {
   PaymentFailureClassification,
   SmallestUnits,
 } from "@neuro-pay/types";
-import type { LedgerStore } from "@neuro-pay/ledger";
+import type { LedgerStore, SettlementIntent } from "@neuro-pay/ledger";
 import {
+  lookupByNonce,
   recordSettlementConfirmed,
   recordSettlementFailed,
   recordSettlementSubmitted,
@@ -157,6 +158,29 @@ export type SettlementQueue = {
   drain(): Promise<void>;
   /** Reset internal state. Tests only. */
   reset(): void;
+  /**
+   * Resume pending and submitted intents left by a previous process.
+   * Delivered-but-untracked nonces are reported as `unknown`.
+   */
+  reconcile(): Promise<ReconciliationReport>;
+  /**
+   * Operator recovery: move a failed intent back to pending and submit
+   * again. Throws if the nonce has no failed intent.
+   */
+  retry(nonce: string): Promise<{ transactionHash: Hex }>;
+};
+
+export type ReconciliationReport = {
+  pending: number;
+  submitted: number;
+  unknown: string[];
+  resumed: string[];
+};
+
+export type SettlementRetryOptions = {
+  maxAttempts: number;
+  baseDelayMs: number;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 /**
@@ -186,55 +210,55 @@ export function createSettlementQueue(input: {
   settler: Settler;
   store: LedgerStore;
   hooks?: SettlementQueueHooks;
+  retry?: Partial<SettlementRetryOptions>;
 }): SettlementQueue {
   const pending = new Set<Promise<void>>();
+  const jobs = new Map<string, Promise<SettlementSubmitted>>();
   let count = 0;
+  const retry: SettlementRetryOptions = {
+    maxAttempts: input.retry?.maxAttempts ?? 3,
+    baseDelayMs: input.retry?.baseDelayMs ?? 25,
+    sleep: input.retry?.sleep ?? defaultSleep,
+  };
 
-  return {
-    async enqueue(s) {
-      let resolveSubmitted!: (value: SettlementSubmitted) => void;
-      let rejectSubmitted!: (cause: unknown) => void;
-      const submittedP = new Promise<SettlementSubmitted>((resolve, reject) => {
-        resolveSubmitted = resolve;
-        rejectSubmitted = reject;
-      });
+  const startJob = (
+    s: SettlementInput,
+    resumeHash: Hex | null,
+  ): Promise<SettlementSubmitted> => {
+    const existingJob = jobs.get(s.nonce);
+    if (existingJob !== undefined) return existingJob;
+    let resolveSubmitted!: (value: SettlementSubmitted) => void;
+    let rejectSubmitted!: (cause: unknown) => void;
+    const submittedP = new Promise<SettlementSubmitted>((resolve, reject) => {
+      resolveSubmitted = resolve;
+      rejectSubmitted = reject;
+    });
+    jobs.set(s.nonce, submittedP);
 
-      // Track the full submit→confirm job from the first tick so
-      // `drain()` cannot miss a fire-and-forget enqueue.
-      const job = (async () => {
-        let submitted: SettlementSubmitted;
+    const job = (async () => {
+      let submitted: SettlementSubmitted;
+      if (resumeHash !== null) {
+        submitted = { transactionHash: resumeHash };
+      } else {
         try {
-          submitted = await input.settler.submitSettle(s);
+          submitted = await submitWithRetry(
+            input.settler,
+            input.store,
+            s,
+            retry,
+          );
         } catch (cause) {
           try {
-            if (cause instanceof SettlerOutOfGasError) {
-              await recordFailed(input, s, {
-                classification:
-                  "settler-out-of-gas" satisfies PaymentFailureClassification,
-                detail: cause.message,
-                transactionHash: null,
-              });
-            } else if (cause instanceof SettlementRevertedError) {
-              await recordFailed(input, s, {
-                classification:
-                  "settlement-reverted" satisfies PaymentFailureClassification,
-                transactionHash: cause.transactionHash,
-                detail: cause.message,
-              });
-            } else {
-              await recordFailed(input, s, {
-                classification:
-                  "settlement-reverted" satisfies PaymentFailureClassification,
-                detail: cause instanceof Error ? cause.message : String(cause),
-                transactionHash: null,
-              });
-            }
+            await markFailed(input, s, cause);
           } finally {
             rejectSubmitted(cause);
           }
           return;
         }
+      }
 
+      const life = await lookupByNonce(input.store, s.nonce);
+      if ((life?.settlementSubmitted.length ?? 0) === 0) {
         await recordSettlementSubmitted({
           store: input.store,
           ctx: ctxFor(s),
@@ -242,64 +266,245 @@ export function createSettlementQueue(input: {
           nonce: s.nonce,
           transactionHash: submitted.transactionHash,
         });
-        count += 1;
-        resolveSubmitted(submitted);
+      }
+      await input.store.updateIntent(s.nonce, {
+        status: "submitted",
+        transactionHash: submitted.transactionHash,
+        lastError: null,
+      });
+      count += 1;
+      resolveSubmitted(submitted);
 
-        try {
-          await input.settler.awaitConfirmation(submitted.transactionHash);
-          await recordSettlementConfirmed({
-            store: input.store,
-            ctx: ctxFor(s),
-            amount: s.amount,
-            nonce: s.nonce,
-            transactionHash: submitted.transactionHash,
-          });
-          await invokeHook(() => input.hooks?.onConfirmed?.(s));
-        } catch (cause) {
-          if (cause instanceof SettlementRevertedError) {
-            await recordFailed(input, s, {
-              classification:
-                "settlement-reverted" satisfies PaymentFailureClassification,
-              transactionHash: cause.transactionHash,
-              detail: cause.message,
-            });
-          } else if (cause instanceof SettlementLostError) {
-            await recordFailed(input, s, {
-              classification:
-                "settlement-reverted" satisfies PaymentFailureClassification,
-              transactionHash: cause.transactionHash,
-              detail: cause.message,
-            });
-          } else {
-            await recordFailed(input, s, {
-              classification:
-                "settlement-reverted" satisfies PaymentFailureClassification,
-              detail: cause instanceof Error ? cause.message : String(cause),
-              transactionHash: null,
-            });
-          }
-        } finally {
-          count -= 1;
-        }
-      })();
-      pending.add(job);
-      job.finally(() => pending.delete(job));
+      try {
+        await input.settler.awaitConfirmation(submitted.transactionHash);
+        await recordSettlementConfirmed({
+          store: input.store,
+          ctx: ctxFor(s),
+          amount: s.amount,
+          nonce: s.nonce,
+          transactionHash: submitted.transactionHash,
+        });
+        await input.store.updateIntent(s.nonce, {
+          status: "confirmed",
+          transactionHash: submitted.transactionHash,
+          lastError: null,
+        });
+        await invokeHook(() => input.hooks?.onConfirmed?.(s));
+      } catch (cause) {
+        await markFailed(input, s, cause);
+      } finally {
+        count -= 1;
+      }
+    })();
+    pending.add(job);
+    job.finally(() => {
+      pending.delete(job);
+      jobs.delete(s.nonce);
+    });
+    return submittedP;
+  };
 
-      return { transactionHash: (await submittedP).transactionHash };
+  return {
+    async enqueue(s) {
+      await persistPendingIntent(input.store, s);
+      const existing = await input.store.getIntent(s.nonce);
+      if (existing?.status === "confirmed") {
+        return { transactionHash: existing.transactionHash ?? ("0x" as Hex) };
+      }
+      if (existing?.status === "failed") {
+        throw new Error(
+          `settlement intent ${s.nonce} already failed; call retry() to resubmit`,
+        );
+      }
+      const resumeHash =
+        existing?.status === "submitted" ? existing.transactionHash : null;
+      return {
+        transactionHash: (await startJob(s, resumeHash)).transactionHash,
+      };
     },
     inFlight() {
       return count;
     },
     async drain() {
-      // `allSettled` resolves regardless of success/failure; we don't
-      // care about the rejection here, only that the queue is empty.
       await Promise.allSettled(Array.from(pending));
     },
     reset() {
       pending.clear();
       count = 0;
     },
+    async reconcile() {
+      const pendingIntents = await input.store.listIntents("pending");
+      const submittedIntents = await input.store.listIntents("submitted");
+      const unknown = await unknownDeliveryNonces(input.store);
+      const resumed: string[] = [];
+      for (const intent of [...pendingIntents, ...submittedIntents]) {
+        const s = settlementInputFromIntent(intent);
+        const resumeHash =
+          intent.status === "submitted" ? intent.transactionHash : null;
+        void startJob(s, resumeHash).catch(() => {
+          // Failure is recorded on the intent; reconcile itself should
+          // not reject because one nonce failed.
+        });
+        resumed.push(intent.nonce);
+      }
+      return {
+        pending: pendingIntents.length,
+        submitted: submittedIntents.length,
+        unknown,
+        resumed,
+      };
+    },
+    async retry(nonce) {
+      const intent = await input.store.getIntent(nonce);
+      if (intent === null || intent.status !== "failed") {
+        throw new Error(`no failed settlement intent for nonce ${nonce}`);
+      }
+      const s = settlementInputFromIntent(intent);
+      if (intent.transactionHash !== null) {
+        await input.store.updateIntent(nonce, {
+          status: "submitted",
+          lastError: null,
+        });
+        return {
+          transactionHash: (await startJob(s, intent.transactionHash))
+            .transactionHash,
+        };
+      }
+      await input.store.updateIntent(nonce, {
+        status: "pending",
+        lastError: null,
+      });
+      return this.enqueue(s);
+    },
   };
+}
+
+export function settlementIntentFromInput(
+  s: SettlementInput,
+  now: string = new Date().toISOString(),
+): SettlementIntent {
+  return {
+    nonce: s.nonce,
+    streamId: s.streamId,
+    sessionPublicKey: s.sessionPublicKey,
+    chainId: s.chainId,
+    token: s.token,
+    tokenDecimals: s.tokenDecimals,
+    amount: s.amount,
+    payer: s.payer,
+    payTo: s.payTo,
+    deadline: s.deadline ?? null,
+    status: "pending",
+    transactionHash: null,
+    attempts: 0,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function settlementInputFromIntent(intent: SettlementIntent): SettlementInput {
+  const input: SettlementInput = {
+    nonce: intent.nonce,
+    streamId: intent.streamId,
+    sessionPublicKey: intent.sessionPublicKey,
+    chainId: intent.chainId,
+    token: intent.token,
+    tokenDecimals: intent.tokenDecimals,
+    amount: intent.amount,
+    payer: intent.payer,
+    payTo: intent.payTo,
+  };
+  if (intent.deadline !== null) input.deadline = intent.deadline;
+  return input;
+}
+
+async function persistPendingIntent(
+  store: LedgerStore,
+  s: SettlementInput,
+): Promise<void> {
+  await store.putIntent(settlementIntentFromInput(s));
+}
+
+async function submitWithRetry(
+  settler: Settler,
+  store: LedgerStore,
+  s: SettlementInput,
+  retry: SettlementRetryOptions,
+): Promise<SettlementSubmitted> {
+  let lastCause: unknown;
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
+    const current = await store.getIntent(s.nonce);
+    await store.updateIntent(s.nonce, {
+      attempts: (current?.attempts ?? 0) + 1,
+    });
+    try {
+      return await settler.submitSettle(s);
+    } catch (cause) {
+      lastCause = cause;
+      if (
+        cause instanceof SettlerOutOfGasError ||
+        cause instanceof SettlementRevertedError
+      ) {
+        throw cause;
+      }
+      await store.updateIntent(s.nonce, {
+        lastError: cause instanceof Error ? cause.message : String(cause),
+      });
+      if (attempt === retry.maxAttempts) throw cause;
+      const delay = retry.baseDelayMs * 2 ** (attempt - 1);
+      await (retry.sleep ?? defaultSleep)(delay);
+    }
+  }
+  throw lastCause;
+}
+
+async function markFailed(
+  input: { store: LedgerStore; hooks?: SettlementQueueHooks },
+  s: SettlementInput,
+  cause: unknown,
+): Promise<void> {
+  const classification: PaymentFailureClassification =
+    cause instanceof SettlerOutOfGasError
+      ? "settler-out-of-gas"
+      : "settlement-reverted";
+  const transactionHash =
+    cause instanceof SettlementRevertedError ||
+    cause instanceof SettlementLostError
+      ? cause.transactionHash
+      : null;
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  await recordFailed(input, s, { classification, detail, transactionHash });
+  await input.store.updateIntent(s.nonce, {
+    status: "failed",
+    transactionHash,
+    lastError: detail,
+  });
+}
+
+async function unknownDeliveryNonces(store: LedgerStore): Promise<string[]> {
+  const deliveries = await store.listDeliveryNonces();
+  const intents = new Set(
+    (await store.listIntents()).map((intent) => intent.nonce),
+  );
+  const entries = await store.entries();
+  const settled = new Set<string>();
+  for (const entry of entries) {
+    if (entry.nonce === null) continue;
+    if (
+      entry.event === "settlement.confirmed" ||
+      entry.event === "settlement.failed"
+    ) {
+      settled.add(entry.nonce);
+    }
+  }
+  return deliveries.filter(
+    (nonce) => !intents.has(nonce) && !settled.has(nonce),
+  );
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function recordFailed(

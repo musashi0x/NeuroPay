@@ -99,6 +99,28 @@ describe("envelope - permit.from dialect", () => {
     expect(res.envelope.signature).toBe(SIGNATURE);
     expect(res.envelope.nonce).toBe("n1");
   });
+
+  it("falls back to witness.nonce when permit.nonce is absent", () => {
+    const body = {
+      from: FROM,
+      permit: {
+        hash: HASH,
+        signature: SIGNATURE,
+        witness: {
+          payTo: PAY_TO,
+          amount: "1000",
+          token: TOKEN,
+          chainId: 97,
+          nonce: "witness-n",
+        },
+      },
+    };
+    const res = parseEnvelopeFromHeaders(
+      new HeaderBag({ "X-PAYMENT": makeEnvelope(body) }),
+    );
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") expect(res.envelope.nonce).toBe("witness-n");
+  });
 });
 
 describe("envelope - permit2Authorization dialect", () => {

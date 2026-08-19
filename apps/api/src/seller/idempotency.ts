@@ -16,6 +16,7 @@
 
 import {
   isNonceAlreadyVerified,
+  type DeliveryRecord,
   type LedgerStore,
   type SegmentDeliveredInput,
   type PaymentVerifiedInput,
@@ -25,6 +26,7 @@ import type {
   LedgerEntry,
   SegmentResponse,
   SmallestUnits,
+  StreamEndReason,
 } from "@neuro-pay/types";
 
 /**
@@ -40,6 +42,10 @@ export type IdempotencyRecord = {
   data: string;
   secondsDelivered: number;
   unitsDelivered: number;
+  accruedUnpaid: SmallestUnits;
+  totalAccrued: SmallestUnits;
+  streamEnded: boolean;
+  endReason: StreamEndReason | null;
   /** Carried separately so the read path doesn't need a clock dependency. */
   ledgerEntryId: string;
   ledgerTimestamp: IsoTimestamp;
@@ -134,23 +140,15 @@ export async function recordVerification(
   // fast read path that can be rebuilt from the ledger at any time.
   const existing = await isNonceAlreadyVerified(input.store, input.nonce);
   if (existing) {
-    const prior = input.index.get(input.nonce);
+    const prior = await loadIdempotencyRecord(
+      input.store,
+      input.index,
+      input.nonce,
+    );
     if (prior) return { kind: "duplicate", record: prior };
-    // Without an in-memory hit we still refuse to double-record; the
-    // route layer falls back to a ledger-driven replay path that always
-    // reads the original segment.
     return {
       kind: "duplicate",
-      record: {
-        nonce: input.nonce,
-        streamId: input.streamId,
-        sequence: 0,
-        data: "",
-        secondsDelivered: 0,
-        unitsDelivered: 0,
-        ledgerEntryId: "",
-        ledgerTimestamp: new Date(0).toISOString(),
-      },
+      record: emptyRecord(input.nonce, input.streamId),
     };
   }
 
@@ -178,6 +176,10 @@ export async function recordVerification(
     data: segment?.data ?? "",
     secondsDelivered: segment?.secondsDelivered ?? 0,
     unitsDelivered: segment?.unitsDelivered ?? 0,
+    accruedUnpaid: 0n,
+    totalAccrued: 0n,
+    streamEnded: false,
+    endReason: null,
     ledgerEntryId: event.id,
     ledgerTimestamp: event.timestamp,
   };
@@ -221,19 +223,26 @@ export async function recordSegmentDelivery(input: {
     m.recordSegmentDelivered(args),
   );
 
-  // Update the in-memory record with the actual segment delivered.
-  const prior = input.index.get(input.nonce);
-  if (prior) {
-    input.index.put({
-      ...prior,
-      sequence: input.segment.sequence,
-      data: input.segment.data,
-      secondsDelivered: input.segment.secondsDelivered,
-      unitsDelivered: input.segment.unitsDelivered,
-      ledgerEntryId: entry.id,
-      ledgerTimestamp: entry.timestamp,
-    });
-  }
+  const record: IdempotencyRecord = {
+    nonce: input.nonce,
+    streamId: input.segment.streamId,
+    sequence: input.segment.sequence,
+    data: input.segment.data,
+    secondsDelivered: input.segment.secondsDelivered,
+    unitsDelivered: input.segment.unitsDelivered,
+    accruedUnpaid: input.segment.accruedUnpaid,
+    totalAccrued: input.segment.totalAccrued,
+    streamEnded: input.segment.streamEnded,
+    endReason: input.segment.endReason,
+    ledgerEntryId: entry.id,
+    ledgerTimestamp: entry.timestamp,
+  };
+  input.index.put(record);
+  await input.store.putDelivery({
+    nonce: input.nonce,
+    payload: input.segment,
+    recordedAt: entry.timestamp,
+  });
   return entry;
 }
 
@@ -247,19 +256,64 @@ export function buildReplayResponse(
   nonce: string,
   record: IdempotencyRecord,
 ): SegmentResponse {
+  void nonce;
   return {
     streamId: record.streamId,
     sequence: record.sequence,
     data: record.data,
     secondsDelivered: record.secondsDelivered,
     unitsDelivered: record.unitsDelivered,
-    // Replay reads don't accrue; the segment response carries the same
-    // totals as the original delivery. The route can look up the totals
-    // from the meter if it needs them, but for a byte-equal replay we
-    // intentionally do not.
+    accruedUnpaid: record.accruedUnpaid,
+    totalAccrued: record.totalAccrued,
+    streamEnded: record.streamEnded,
+    endReason: record.endReason,
+  };
+}
+
+export async function loadIdempotencyRecord(
+  store: LedgerStore,
+  index: IdempotencyIndex,
+  nonce: string,
+): Promise<IdempotencyRecord | null> {
+  const stored = await store.getDelivery(nonce);
+  if (stored !== null) {
+    const record = recordFromDelivery(stored);
+    index.put(record);
+    return record;
+  }
+  return index.get(nonce);
+}
+
+function recordFromDelivery(stored: DeliveryRecord): IdempotencyRecord {
+  return {
+    nonce: stored.nonce,
+    streamId: stored.payload.streamId,
+    sequence: stored.payload.sequence,
+    data: stored.payload.data,
+    secondsDelivered: stored.payload.secondsDelivered,
+    unitsDelivered: stored.payload.unitsDelivered,
+    accruedUnpaid: stored.payload.accruedUnpaid,
+    totalAccrued: stored.payload.totalAccrued,
+    streamEnded: stored.payload.streamEnded,
+    endReason: stored.payload.endReason,
+    ledgerEntryId: stored.nonce,
+    ledgerTimestamp: stored.recordedAt,
+  };
+}
+
+function emptyRecord(nonce: string, streamId: string): IdempotencyRecord {
+  return {
+    nonce,
+    streamId,
+    sequence: 0,
+    data: "",
+    secondsDelivered: 0,
+    unitsDelivered: 0,
     accruedUnpaid: 0n,
     totalAccrued: 0n,
     streamEnded: false,
     endReason: null,
+    ledgerEntryId: "",
+    ledgerTimestamp: new Date(0).toISOString(),
   };
 }

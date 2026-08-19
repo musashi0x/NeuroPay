@@ -30,7 +30,13 @@ import {
   loadAppConfig,
 } from "@neuro-pay/altana";
 import { openLedgerStore, type LedgerStore } from "@neuro-pay/ledger";
-import { createPublicClient, createWalletClient, http, type PublicClient, type Transport } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  type PublicClient,
+  type Transport,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { bsc, bscTestnet } from "viem/chains";
 import type { Address, Hex } from "@neuro-pay/types";
@@ -105,6 +111,13 @@ export function tryCreateRuntime(
   });
   hub.notify = () => consoleService.notify();
 
+  void seller.reconcileSettlements().catch((err: unknown) => {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "settlement outbox reconciliation failed at startup",
+    );
+  });
+
   return {
     console: consoleService,
     seller,
@@ -114,11 +127,7 @@ export function tryCreateRuntime(
 
 function createRuntimeVerifier(
   config: ReturnType<typeof loadAppConfig>,
-): (input: {
-  payer: Address;
-  hash: Hex;
-  signature: Hex;
-}) => Promise<Hex> {
+): (input: { payer: Address; hash: Hex; signature: Hex }) => Promise<Hex> {
   const rpcUrl = config.chain.rpcUrl;
   if (!rpcUrl) {
     logger.warn(
@@ -239,5 +248,12 @@ function watchLedger(store: LedgerStore, onAppend: () => void): LedgerStore {
     entries: () => store.entries(),
     size: () => store.size(),
     close: () => store.close(),
+    putDelivery: (record) => store.putDelivery(record),
+    getDelivery: (nonce) => store.getDelivery(nonce),
+    listDeliveryNonces: () => store.listDeliveryNonces(),
+    putIntent: (intent) => store.putIntent(intent),
+    getIntent: (nonce) => store.getIntent(nonce),
+    listIntents: (status) => store.listIntents(status),
+    updateIntent: (nonce, patch) => store.updateIntent(nonce, patch),
   };
 }

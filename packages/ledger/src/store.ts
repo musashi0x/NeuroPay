@@ -47,6 +47,20 @@ import type {
 } from "@neuro-pay/types";
 
 import { assertNoKeyMaterial, KeyMaterialRejectedError } from "./secrets.js";
+import {
+  decodeDeliveryRow,
+  encodeDeliveryRecord,
+  type DeliveryRecord,
+  type DeliveryRow,
+} from "./delivery.js";
+import {
+  decodeSettlementIntentRow,
+  encodeSettlementIntent,
+  type SettlementIntent,
+  type SettlementIntentPatch,
+  type SettlementIntentRow,
+  type SettlementIntentStatus,
+} from "./outbox.js";
 
 /**
  * Wire columns of a ledger row on disk. Kept in one place so every SQL
@@ -142,6 +156,39 @@ const SCHEMA_STATEMENTS = [
      WHERE stream_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS ledger_entries_session_idx ON ledger_entries(session_public_key)
      WHERE session_public_key IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS delivery_records (
+    nonce TEXT PRIMARY KEY,
+    stream_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    seconds_delivered INTEGER NOT NULL,
+    units_delivered INTEGER NOT NULL,
+    accrued_unpaid TEXT NOT NULL,
+    total_accrued TEXT NOT NULL,
+    stream_ended INTEGER NOT NULL,
+    end_reason TEXT,
+    recorded_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS settlement_intents (
+    nonce TEXT PRIMARY KEY,
+    stream_id TEXT NOT NULL,
+    session_public_key TEXT,
+    chain_id INTEGER NOT NULL,
+    token TEXT NOT NULL,
+    token_decimals INTEGER NOT NULL,
+    amount TEXT NOT NULL,
+    payer TEXT NOT NULL,
+    pay_to TEXT NOT NULL,
+    deadline INTEGER,
+    status TEXT NOT NULL,
+    transaction_hash TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS settlement_intents_status_idx
+     ON settlement_intents(status)`,
 ];
 
 /**
@@ -176,6 +223,34 @@ const INSERT_STATEMENT = `INSERT INTO ledger_entries (
  * per payment event, never per call).
  */
 const SELECT_ALL_ORDERED = `SELECT * FROM ledger_entries ORDER BY seq ASC`;
+
+const INSERT_DELIVERY = `INSERT OR IGNORE INTO delivery_records (
+  nonce, stream_id, sequence, data,
+  seconds_delivered, units_delivered,
+  accrued_unpaid, total_accrued,
+  stream_ended, end_reason, recorded_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+const SELECT_DELIVERY = `SELECT * FROM delivery_records WHERE nonce = ?`;
+
+const SELECT_DELIVERY_NONCES = `SELECT nonce FROM delivery_records`;
+
+const INSERT_INTENT = `INSERT OR IGNORE INTO settlement_intents (
+  nonce, stream_id, session_public_key, chain_id, token, token_decimals,
+  amount, payer, pay_to, deadline, status, transaction_hash, attempts,
+  last_error, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+const SELECT_INTENT = `SELECT * FROM settlement_intents WHERE nonce = ?`;
+
+const SELECT_INTENTS = `SELECT * FROM settlement_intents ORDER BY created_at ASC`;
+
+const SELECT_INTENTS_BY_STATUS = `SELECT * FROM settlement_intents
+  WHERE status = ? ORDER BY created_at ASC`;
+
+const UPDATE_INTENT = `UPDATE settlement_intents
+  SET status = ?, transaction_hash = ?, attempts = ?, last_error = ?, updated_at = ?
+  WHERE nonce = ?`;
 
 /**
  * Create a ledger store and run the schema.
@@ -247,6 +322,35 @@ export interface LedgerStore {
 
   /** Close the underlying connection. Idempotent. */
   close(): void;
+
+  /**
+   * Persist the exact segment payload for `nonce`. First write wins;
+   * a later call with the same nonce is a no-op so the record stays
+   * immutable.
+   */
+  putDelivery(record: DeliveryRecord): Promise<boolean>;
+
+  /** Read the delivery record for `nonce`, or `null` if none exists. */
+  getDelivery(nonce: string): Promise<DeliveryRecord | null>;
+
+  /** Every nonce that has a persisted delivery payload. */
+  listDeliveryNonces(): Promise<string[]>;
+
+  /**
+   * Insert a settlement intent. First write wins (later inserts are
+   * ignored) so a crash retry cannot clobber an in-flight row.
+   */
+  putIntent(intent: SettlementIntent): Promise<boolean>;
+
+  getIntent(nonce: string): Promise<SettlementIntent | null>;
+
+  listIntents(status?: SettlementIntentStatus): Promise<SettlementIntent[]>;
+
+  /** Patch status / tx hash / attempts. No-op when the nonce is unknown. */
+  updateIntent(
+    nonce: string,
+    patch: SettlementIntentPatch,
+  ): Promise<SettlementIntent | null>;
 }
 
 class LedgerStoreImpl implements LedgerStore {
@@ -330,6 +434,155 @@ class LedgerStoreImpl implements LedgerStore {
     const stmt = this.db.prepare(SELECT_ALL_ORDERED);
     const rows = stmt.all() as unknown as LedgerRow[];
     return rows.length;
+  }
+
+  async putDelivery(record: DeliveryRecord): Promise<boolean> {
+    this.assertOpen();
+    if (!record.nonce) {
+      throw new TypeError("delivery nonce must be a non-empty string");
+    }
+    assertNoKeyMaterial({
+      nonce: record.nonce,
+      streamId: record.payload.streamId,
+      endReason: record.payload.endReason,
+    });
+    const existing = this.db.prepare(SELECT_DELIVERY).get(record.nonce);
+    if (existing !== undefined) return false;
+    const row = encodeDeliveryRecord({
+      ...record,
+      recordedAt: record.recordedAt || this.clock(),
+    });
+    this.db
+      .prepare(INSERT_DELIVERY)
+      .run(
+        row.nonce,
+        row.stream_id,
+        row.sequence,
+        row.data,
+        row.seconds_delivered,
+        row.units_delivered,
+        row.accrued_unpaid,
+        row.total_accrued,
+        row.stream_ended,
+        row.end_reason,
+        row.recorded_at,
+      );
+    return true;
+  }
+
+  async getDelivery(nonce: string): Promise<DeliveryRecord | null> {
+    this.assertOpen();
+    if (!nonce) {
+      throw new TypeError("delivery nonce must be a non-empty string");
+    }
+    const stmt = this.db.prepare(SELECT_DELIVERY);
+    const row = stmt.get(nonce) as DeliveryRow | undefined;
+    return row === undefined ? null : decodeDeliveryRow(row);
+  }
+
+  async listDeliveryNonces(): Promise<string[]> {
+    this.assertOpen();
+    const rows = this.db.prepare(SELECT_DELIVERY_NONCES).all() as {
+      nonce: string;
+    }[];
+    return rows.map((row) => row.nonce);
+  }
+
+  async putIntent(intent: SettlementIntent): Promise<boolean> {
+    this.assertOpen();
+    if (!intent.nonce) {
+      throw new TypeError("intent nonce must be a non-empty string");
+    }
+    assertNoKeyMaterial({
+      nonce: intent.nonce,
+      streamId: intent.streamId,
+      payer: intent.payer,
+      payTo: intent.payTo,
+    });
+    const existing = this.db.prepare(SELECT_INTENT).get(intent.nonce);
+    if (existing !== undefined) return false;
+    const now = this.clock();
+    const row = encodeSettlementIntent({
+      ...intent,
+      createdAt: intent.createdAt || now,
+      updatedAt: intent.updatedAt || now,
+    });
+    this.db
+      .prepare(INSERT_INTENT)
+      .run(
+        row.nonce,
+        row.stream_id,
+        row.session_public_key,
+        row.chain_id,
+        row.token,
+        row.token_decimals,
+        row.amount,
+        row.payer,
+        row.pay_to,
+        row.deadline,
+        row.status,
+        row.transaction_hash,
+        row.attempts,
+        row.last_error,
+        row.created_at,
+        row.updated_at,
+      );
+    return true;
+  }
+
+  async getIntent(nonce: string): Promise<SettlementIntent | null> {
+    this.assertOpen();
+    if (!nonce) {
+      throw new TypeError("intent nonce must be a non-empty string");
+    }
+    const row = this.db.prepare(SELECT_INTENT).get(nonce) as
+      SettlementIntentRow | undefined;
+    return row === undefined ? null : decodeSettlementIntentRow(row);
+  }
+
+  async listIntents(
+    status?: SettlementIntentStatus,
+  ): Promise<SettlementIntent[]> {
+    this.assertOpen();
+    const rows = (
+      status === undefined
+        ? this.db.prepare(SELECT_INTENTS).all()
+        : this.db.prepare(SELECT_INTENTS_BY_STATUS).all(status)
+    ) as SettlementIntentRow[];
+    return rows.map(decodeSettlementIntentRow);
+  }
+
+  async updateIntent(
+    nonce: string,
+    patch: SettlementIntentPatch,
+  ): Promise<SettlementIntent | null> {
+    this.assertOpen();
+    const current = await this.getIntent(nonce);
+    if (current === null) return null;
+    const next: SettlementIntent = {
+      ...current,
+      status: patch.status ?? current.status,
+      transactionHash:
+        patch.transactionHash === undefined
+          ? current.transactionHash
+          : patch.transactionHash,
+      attempts: patch.attempts ?? current.attempts,
+      lastError:
+        patch.lastError === undefined ? current.lastError : patch.lastError,
+      updatedAt: this.clock(),
+    };
+    const row = encodeSettlementIntent(next);
+    this.db
+      .prepare(UPDATE_INTENT)
+      .run(
+        row.status,
+        row.transaction_hash,
+        row.attempts,
+        row.last_error,
+        row.updated_at,
+        row.nonce,
+      );
+    return next;
   }
 
   close(): void {

@@ -50,6 +50,7 @@ import {
   buildReplayResponse,
   type IdempotencyIndex,
   createIdempotencyIndex,
+  loadIdempotencyRecord,
   recordSegmentDelivery,
   recordVerification,
 } from "./idempotency.js";
@@ -65,6 +66,7 @@ import {
   type SettlementInput,
   type SettlementQueue,
   createSettlementQueue,
+  settlementIntentFromInput,
 } from "./settle.js";
 import { attachSettlementHooks } from "./settlement-hooks.js";
 import { logger } from "../logger.js";
@@ -157,6 +159,13 @@ export type Seller = {
   };
   /** Drain all pending settlements. */
   drainSettlements(): Promise<void>;
+  /**
+   * Resume pending/submitted settlement intents from the durable outbox.
+   * Call once at process start.
+   */
+  reconcileSettlements(): Promise<import("./settle.js").ReconciliationReport>;
+  /** Operator recovery: resubmit a failed settlement intent. */
+  retrySettlement(nonce: string): Promise<{ transactionHash: Hex }>;
   /** Console inspection: every known stream without the producer callback. */
   inspectStreams(): StreamInspection[];
   /** End every active stream. Used by the kill switch. */
@@ -245,6 +254,7 @@ export function createSeller(input: CreateSellerInput): Seller {
       clock,
     }),
   });
+  const enqueued = new Set<Promise<unknown>>();
 
   /**
    * Close every active stream on a price change (5.10). The price
@@ -419,6 +429,13 @@ export function createSeller(input: CreateSellerInput): Seller {
           body: buildReplayResponse(parsed.nonce!, replay.record),
         };
       }
+      if (replay.kind === "incomplete") {
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "verified nonce is missing a delivery record",
+        };
+      }
 
       // Exposure gate. Only runs after we know the buyer paid; the
       // exposure limit is "credit the seller has extended but not yet
@@ -545,16 +562,23 @@ export function createSeller(input: CreateSellerInput): Seller {
         payer: parsed.from,
         payTo: input.config.payTo,
       };
-      void queue.enqueue(settlementInput).catch((cause: unknown) => {
-        logger.warn(
-          {
-            err: cause instanceof Error ? cause.message : String(cause),
-            nonce: settlementInput.nonce,
-            streamId,
-          },
-          "settlement enqueue failed; exposure held as unrecovered",
-        );
-      });
+      // Persist the intent before returning 200 so a crash cannot lose
+      // the work between delivery and submitSettle.
+      await input.store.putIntent(settlementIntentFromInput(settlementInput));
+      const submitted = queue
+        .enqueue(settlementInput)
+        .catch((cause: unknown) => {
+          logger.warn(
+            {
+              err: cause instanceof Error ? cause.message : String(cause),
+              nonce: settlementInput.nonce,
+              streamId,
+            },
+            "settlement enqueue failed; exposure held as unrecovered",
+          );
+        });
+      enqueued.add(submitted);
+      void submitted.finally(() => enqueued.delete(submitted));
 
       return {
         kind: "delivered",
@@ -589,7 +613,20 @@ export function createSeller(input: CreateSellerInput): Seller {
     },
 
     async drainSettlements() {
+      await Promise.allSettled(Array.from(enqueued));
       await queue.drain();
+    },
+
+    async reconcileSettlements() {
+      const report = await queue.reconcile();
+      for (let i = 0; i < report.resumed.length; i += 1) {
+        exposure.tryAcquire();
+      }
+      return report;
+    },
+
+    retrySettlement(nonce) {
+      return queue.retry(nonce);
     },
 
     inspectStreams() {
@@ -681,8 +718,11 @@ function readDemandAmount(
 }
 
 /**
- * Replay detection: same nonce → same segment, no new cost. Reads via
- * the in-memory index (fast path) and falls back to the ledger.
+ * Replay detection: same nonce → same segment, no new cost.
+ *
+ * Prefers the immutable delivery record in the ledger so a cold
+ * in-memory index still returns the original payload. A verified
+ * nonce with no delivery record is `incomplete` — never a stub.
  */
 async function isReplay(
   nonce: string | null,
@@ -691,31 +731,18 @@ async function isReplay(
 ): Promise<
   | { kind: "fresh" }
   | { kind: "replay"; record: import("./idempotency.js").IdempotencyRecord }
+  | { kind: "incomplete" }
 > {
   if (nonce === null) return { kind: "fresh" };
-  const cached = index.get(nonce);
-  if (cached) return { kind: "replay", record: cached };
-  // Fall through to ledger on a cold cache.
+  const record = await loadIdempotencyRecord(store, index, nonce);
+  if (record !== null && record.sequence > 0) {
+    return { kind: "replay", record };
+  }
   const { isNonceAlreadyVerified } = await import("@neuro-pay/ledger");
-  const verified = await isNonceAlreadyVerified(store, nonce);
-  if (!verified) return { kind: "fresh" };
-  // Rebuild a stub record from the ledger (no segment payload); the
-  // route layer falls back to a 404 if no segment was recorded under
-  // the nonce (which is the standard case if a `segment.delivered`
-  // entry isn't required).
-  return {
-    kind: "replay",
-    record: {
-      nonce,
-      streamId: "",
-      sequence: 0,
-      data: "",
-      secondsDelivered: 0,
-      unitsDelivered: 0,
-      ledgerEntryId: "",
-      ledgerTimestamp: new Date(0).toISOString(),
-    },
-  };
+  if (await isNonceAlreadyVerified(store, nonce)) {
+    return { kind: "incomplete" };
+  }
+  return { kind: "fresh" };
 }
 
 export { computeLocalLimit } from "@neuro-pay/metering";

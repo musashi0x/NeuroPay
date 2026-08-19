@@ -162,7 +162,14 @@ describe("seller composition root", () => {
     });
     expect(first.kind).toBe("delivered");
     if (first.kind !== "delivered") return;
-    const body1 = first.body as { sequence: number; data: string };
+    const body1 = first.body as {
+      sequence: number;
+      data: string;
+      accruedUnpaid: bigint;
+      totalAccrued: bigint;
+      secondsDelivered: number;
+      unitsDelivered: number;
+    };
 
     // Second presentation of the same nonce should serve the cached segment.
     const second = await seller.nextSegment({
@@ -172,10 +179,41 @@ describe("seller composition root", () => {
     });
     expect(second.kind).toBe("delivered");
     if (second.kind === "delivered") {
-      const body2 = second.body as { sequence: number; data: string };
-      expect(body2.sequence).toBe(body1.sequence);
-      expect(body2.data).toBe(body1.data);
+      expect(second.body).toEqual(body1);
     }
+  });
+
+  it("writes a durable settlement intent before returning the segment", async () => {
+    const stalled = createStallingSettler();
+    const { seller, store } = buildSeller({ settler: stalled.settler });
+    const opened = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    const first = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: envelopeHeaders({
+        from: PAYER,
+        permit: {
+          hash: "0x" + "22".repeat(32),
+          signature: "0x" + "11".repeat(65),
+          witness: {
+            payTo: PAY_TO,
+            amount: "1000",
+            token: TOKEN,
+            chainId: 97,
+            nonce: "outbox-seg-1",
+          },
+        },
+      }),
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(first.kind).toBe("delivered");
+    const intent = await store.getIntent("outbox-seg-1");
+    expect(intent).not.toBeNull();
+    expect(["pending", "submitted"]).toContain(intent?.status);
+    stalled.confirm();
+    await seller.drainSettlements();
+    expect((await store.getIntent("outbox-seg-1"))?.status).toBe("confirmed");
   });
 
   it("exposure-limit gate fires once maxInFlight settlements are pending", async () => {

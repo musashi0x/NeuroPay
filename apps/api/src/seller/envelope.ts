@@ -226,7 +226,10 @@ export function parseEnvelope(
       signature,
     },
   };
-  const nonce = readString(permit, "nonce") ?? readString(raw, "nonce");
+  const nonce =
+    readString(permit, "nonce") ??
+    readString(raw, "nonce") ??
+    (isObject(witness) ? readString(witness, "nonce") : null);
 
   return {
     kind: "ok",

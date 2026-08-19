@@ -25,6 +25,12 @@
  */
 
 export type { AppendInput, LedgerStore, LedgerStoreOptions } from "./store.js";
+export type { DeliveryRecord } from "./delivery.js";
+export type {
+  SettlementIntent,
+  SettlementIntentPatch,
+  SettlementIntentStatus,
+} from "./outbox.js";
 export {
   KeyMaterialRejectedError,
   openLedgerStore,

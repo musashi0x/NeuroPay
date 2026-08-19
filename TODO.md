@@ -16,11 +16,11 @@ This file tracks missing, incomplete, and unverified project capabilities. Items
 
 ## P1 — delivery, durability, and recovery
 
-- [ ] Make nonce replay return the exact original segment payload, not a reconstructed stub or possible 404 (`apps/api/src/seller/index.ts`).
-- [ ] Persist immutable delivery records keyed by authorization nonce, including the exact response payload and delivery metadata.
-- [ ] Add a durable settlement-intent/outbox queue so process termination cannot lose work between delivery and settlement.
-- [ ] Add startup reconciliation for submitted, pending, timed-out, and unknown settlement intents.
-- [ ] Add retry/backoff and operator recovery for transient RPC failures and failed settlements.
+- [x] Make nonce replay return the exact original segment payload, not a reconstructed stub or possible 404 (`apps/api/src/seller/index.ts`). _(replay loads the immutable delivery record; a verified nonce with no payload is `incomplete` rather than an empty stub. Covered in `index.test.ts` and `idempotency.test.ts`.)_
+- [x] Persist immutable delivery records keyed by authorization nonce, including the exact response payload and delivery metadata. _(`delivery_records` table in the ledger SQLite file; first write wins. `recordSegmentDelivery` persists the full `SegmentResponse`.)_
+- [x] Add a durable settlement-intent/outbox queue so process termination cannot lose work between delivery and settlement. _(`settlement_intents` table; seller `putIntent` before returning 200; queue drives pending → submitted → confirmed|failed.)_
+- [x] Add startup reconciliation for submitted, pending, timed-out, and unknown settlement intents. _(`seller.reconcileSettlements()` / `queue.reconcile()`; runtime calls it on boot. Pending resubmits, submitted resumes confirmation, deliveries with no intent are reported as `unknown`.)_
+- [x] Add retry/backoff and operator recovery for transient RPC failures and failed settlements. _(transient submit errors retry with exponential backoff; terminal out-of-gas/revert do not. `retrySettlement(nonce)` moves a failed intent back to pending.)_
 - [ ] Add graceful shutdown: stop new delivery, persist or drain settlement work, close SSE connections, and close the ledger cleanly.
 - [ ] Add stream idle/expiry cleanup for abandoned in-memory streams.
 - [ ] Add explicit ledger events for stream ended, abandoned, settlement retry, and recovery outcomes.
