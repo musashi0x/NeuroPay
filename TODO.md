@@ -27,9 +27,9 @@ This file tracks missing, incomplete, and unverified project capabilities. Items
 
 ## P1 — on-chain session lifecycle
 
-- [ ] Wire on-chain revoke into a secured API/operator service rather than returning only the local revoke result.
-- [ ] Verify live authority state after revoke and report authorized, expired, and revoked states from chain reads.
-- [ ] Add integration coverage for local revoke, on-chain revoke success, on-chain revoke failure, and retry.
+- [x] Wire on-chain revoke into a secured API/operator service rather than returning only the local revoke result. _(`createRuntimeSessionAuthority` in `apps/api/src/runtime.ts` wires `revokeSession`/`retryOnChainRevoke` from `ADMIN_PRIVATE_KEY` + `RPC_URL` into `performRevoke`/`performRetryRevoke`; falls back to local-only with a logged warning when either is unset, same pattern as the verifier/settler wiring. Console service now caches the failed-revoke snapshot and exposes `POST /v1/session/revoke/retry`.)_
+- [x] Verify live authority state after revoke and report authorized, expired, and revoked states from chain reads. _(`resolveStatus` wires `checkSessionAuthority` whenever `RPC_URL` is set, independent of the admin key; `getSession()`/console snapshots now report `active`/`expired`/`revoked`/`unknown` from a live Keystore read instead of local-only expiry+rail checks.)_
+- [x] Add integration coverage for local revoke, on-chain revoke success, on-chain revoke failure, and retry. _(`packages/altana/src/session/revoke.test.ts` covers `revokeSession`'s CONFIRMED/PENDING/FAILED/thrown paths and `retryOnChainRevoke` resubmitting after a failure; `packages/altana/src/session/authority.test.ts` covers active/expired/revoked; `apps/api/src/console/service.test.ts` adds on-chain success, on-chain failure, and retry-then-clear cases against the wired console service.)_
 - [ ] Run the complete funded BNB testnet provisioning flow and record wallet-funding, grant, rail-provisioning, and revoke transaction hashes.
 - [ ] Verify the documented doubled first-admin-action fee behavior on a fresh wallet.
 

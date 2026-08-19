@@ -6,6 +6,7 @@
  *   GET  /v1/payments  — ledger history
  *   GET  /v1/budget    — window spend vs both limits
  *   POST /v1/session/revoke — two-stage kill switch
+ *   POST /v1/session/revoke/retry — resubmit a failed on-chain revoke
  *   GET  /v1/events    — SSE snapshots so the console need not reload
  */
 
@@ -50,6 +51,18 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   app.post("/v1/session/revoke", async (c) => {
     try {
       const result = await deps.console.revoke();
+      return c.json(toJsonSafe(result), 200);
+    } catch (err) {
+      if (err instanceof ConsoleNotFoundError) {
+        return c.json({ error: { message: err.message } }, 404);
+      }
+      throw err;
+    }
+  });
+
+  app.post("/v1/session/revoke/retry", async (c) => {
+    try {
+      const result = await deps.console.retryRevoke();
       return c.json(toJsonSafe(result), 200);
     } catch (err) {
       if (err instanceof ConsoleNotFoundError) {

@@ -24,10 +24,18 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  buildAltanaClient,
+  checkSessionAuthority,
   ConfigError,
   PERMIT2_ADDRESS,
+  retryOnChainRevoke,
+  revokeSession,
   SessionStore,
+  signerFromPrivateKey,
   loadAppConfig,
+  type AltanaClientContext,
+  type PersistedSession,
+  type RevokeSessionResult,
 } from "@neuro-pay/altana";
 import { openLedgerStore, type LedgerStore } from "@neuro-pay/ledger";
 import {
@@ -39,7 +47,12 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { bsc, bscTestnet } from "viem/chains";
-import type { Address, Hex } from "@neuro-pay/types";
+import type {
+  Address,
+  Hex,
+  RevokeResult,
+  SessionStatus,
+} from "@neuro-pay/types";
 
 import { createSeller, type Seller } from "./seller/index.js";
 import { createInMemorySettler } from "./seller/settle.js";
@@ -88,6 +101,7 @@ export function tryCreateRuntime(
 
   const verifier = createRuntimeVerifier(config);
   const settler = createRuntimeSettler(config, ledger, env);
+  const sessionAuthority = createRuntimeSessionAuthority(config, sessions);
 
   const seller = createSeller({
     initialPriceSheet: priceSheet,
@@ -108,6 +122,15 @@ export function tryCreateRuntime(
     sessions,
     ledger,
     seller,
+    ...(sessionAuthority.resolveStatus
+      ? { resolveStatus: sessionAuthority.resolveStatus }
+      : {}),
+    ...(sessionAuthority.performRevoke
+      ? { performRevoke: sessionAuthority.performRevoke }
+      : {}),
+    ...(sessionAuthority.performRetryRevoke
+      ? { performRetryRevoke: sessionAuthority.performRetryRevoke }
+      : {}),
   });
   hub.notify = () => consoleService.notify();
 
@@ -226,6 +249,122 @@ function createRuntimeSettler(
     );
     return createInMemorySettler({ defaultBehavior: "confirm" });
   }
+}
+
+/**
+ * Wire the on-chain session authority read and the two-stage revoke.
+ *
+ * The authority read (`checkSessionAuthority`) is a free Keystore view and
+ * needs only `RPC_URL`; it is wired whenever that is set. On-chain revoke
+ * additionally needs `ADMIN_PRIVATE_KEY` — the same authority that granted
+ * the session. Missing either falls back to `undefined`, which leaves the
+ * console reporting local-only session status and local-only revoke state,
+ * same as before this wiring existed.
+ *
+ * The Altana client is built once (lazily, on first use) and reused for
+ * every authority read and every revoke — `buildAltanaClient` asserts
+ * token decimals against the chain, which is one RPC round trip we don't
+ * want repeated on every `/v1/session` poll.
+ */
+function createRuntimeSessionAuthority(
+  config: ReturnType<typeof loadAppConfig>,
+  sessions: SessionStore,
+): {
+  resolveStatus?: (session: PersistedSession) => Promise<SessionStatus>;
+  performRevoke?: (session: PersistedSession) => Promise<RevokeResult>;
+  performRetryRevoke?: (session: PersistedSession) => Promise<RevokeResult>;
+} {
+  const rpcUrl = config.chain.rpcUrl;
+  if (!rpcUrl) {
+    logger.warn(
+      "RPC_URL not set — on-chain session authority reads are disabled. " +
+        "The console reports local-only session status (expiry + rail flag only).",
+    );
+    return {};
+  }
+
+  let ctxPromise: Promise<AltanaClientContext> | undefined;
+  const getCtx = (): Promise<AltanaClientContext> => {
+    if (!ctxPromise) ctxPromise = buildAltanaClient(config.chain);
+    return ctxPromise;
+  };
+
+  const resolveStatus = async (
+    persisted: PersistedSession,
+  ): Promise<SessionStatus> => {
+    if (!persisted.railProvisioned) return "unprovisioned";
+    try {
+      const ctx = await getCtx();
+      const authority = await checkSessionAuthority({
+        session: persisted,
+        network: ctx.network,
+        publicClient: ctx.publicClient,
+      });
+      return authority.status;
+    } catch (err: unknown) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "session authority read failed — reporting status as unknown",
+      );
+      return "unknown";
+    }
+  };
+
+  const adminPrivateKey = config.secrets.adminPrivateKey;
+  if (!adminPrivateKey) {
+    logger.warn(
+      "ADMIN_PRIVATE_KEY not set — on-chain revoke is disabled. " +
+        "The revoke endpoint still stops local signing but cannot submit " +
+        "revokeSession on chain.",
+    );
+    return { resolveStatus };
+  }
+
+  const adminSigner = signerFromPrivateKey(adminPrivateKey);
+
+  const toRevokeResult = (
+    outcome: Pick<
+      RevokeSessionResult,
+      "onChainRevoked" | "onChainStatus" | "onChainTransactionHash"
+    >,
+    localRevoked: boolean,
+  ): RevokeResult => ({
+    local: { revoked: localRevoked },
+    onChain: {
+      revoked: outcome.onChainRevoked,
+      status: outcome.onChainStatus,
+      transactionHash: outcome.onChainTransactionHash,
+    },
+  });
+
+  const performRevoke = async (
+    persisted: PersistedSession,
+  ): Promise<RevokeResult> => {
+    const ctx = await getCtx();
+    const outcome = await revokeSession(sessions, {
+      client: ctx.client,
+      wallet: { address: persisted.walletAddress } as never,
+      adminSigner,
+    });
+    return toRevokeResult(outcome, outcome.localRevoked);
+  };
+
+  const performRetryRevoke = async (
+    persisted: PersistedSession,
+  ): Promise<RevokeResult> => {
+    const ctx = await getCtx();
+    const outcome = await retryOnChainRevoke({
+      client: ctx.client,
+      wallet: { address: persisted.walletAddress } as never,
+      adminSigner,
+      session: persisted,
+    });
+    // Local was already true — that's why this is a retry of the on-chain
+    // stage only. `retryOnChainRevoke` never touches the store.
+    return toRevokeResult(outcome, true);
+  };
+
+  return { resolveStatus, performRevoke, performRetryRevoke };
 }
 
 function viemChainFor(chainId: number) {

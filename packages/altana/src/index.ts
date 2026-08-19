@@ -90,11 +90,13 @@ export type {
 } from "./session/authority.js";
 
 // Session revocation.
-export { revokeSession } from "./session/revoke.js";
+export { revokeSession, retryOnChainRevoke } from "./session/revoke.js";
 export type {
   RevokeSessionResult,
   RevokeSessionInput,
+  RetryOnChainRevokeInput,
   OnChainRevokeStatus,
+  OnChainRevokeOutcome,
 } from "./session/revoke.js";
 
 // Rail provisioning.
