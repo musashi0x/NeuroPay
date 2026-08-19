@@ -71,5 +71,10 @@ export function renderOutcome(c: Context, outcome: SellerOutcome): Response {
         },
         402,
       );
+    case "unavailable":
+      return c.json(
+        { error: { message: "Service Unavailable", reason: outcome.reason } },
+        503,
+      );
   }
 }

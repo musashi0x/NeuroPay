@@ -11,7 +11,6 @@ import {
   computeWindowSpend,
   fraction,
   recordSessionRevoked,
-  recordStreamEnded,
   type LedgerStore,
 } from "@neuro-pay/ledger";
 import type {
@@ -49,6 +48,10 @@ export type ConsoleService = {
   revoke(): Promise<RevokeResult>;
   subscribe(listener: (event: ConsoleLiveEvent) => void): () => void;
   notify(): void;
+  /** Abort live SSE connections and drop subscribers. */
+  close(): void;
+  /** Register a closer invoked by `close()` so SSE handlers can abort. */
+  registerSseAbort(abort: () => void): () => void;
 };
 
 export type CreateConsoleServiceInput = {
@@ -75,6 +78,7 @@ export function createConsoleService(
 ): ConsoleService {
   const nowMs = input.now ?? Date.now;
   const listeners = new Set<(event: ConsoleLiveEvent) => void>();
+  const sseAborts = new Set<() => void>();
 
   const service: ConsoleService = {
     async getSession() {
@@ -125,20 +129,7 @@ export function createConsoleService(
             onChain: { revoked: false, status: null, transactionHash: null },
           };
 
-      const ended = input.seller?.endAll("session-revoked") ?? [];
-      for (const streamId of ended) {
-        await recordStreamEnded({
-          store: input.ledger,
-          ctx: {
-            streamId,
-            sessionPublicKey: persisted.publicKey,
-            chainId: input.config.chain.chainId,
-            token: input.config.chain.token,
-            tokenDecimals: input.config.chain.tokenDecimals,
-          },
-          reason: "session-revoked",
-        });
-      }
+      input.seller?.endAll("session-revoked");
 
       await recordSessionRevoked({
         store: input.ledger,
@@ -167,6 +158,19 @@ export function createConsoleService(
         const event: ConsoleLiveEvent = { type: "snapshot", snapshot };
         for (const listener of listeners) listener(event);
       });
+    },
+
+    registerSseAbort(abort) {
+      sseAborts.add(abort);
+      return () => {
+        sseAborts.delete(abort);
+      };
+    },
+
+    close() {
+      for (const abort of sseAborts) abort();
+      sseAborts.clear();
+      listeners.clear();
     },
   };
 

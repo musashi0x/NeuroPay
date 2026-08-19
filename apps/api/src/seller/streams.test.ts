@@ -195,3 +195,54 @@ describe("streams - deliverNextSegment (bounded work)", () => {
     expect(b?.endReason).toBe("price-changed");
   });
 });
+
+describe("streams - idle / expiry sweep", () => {
+  it("ends streams past expiresAt as abandoned", () => {
+    let nowMs = 1_700_000_000_000;
+    const store = createStreamStore({
+      now: () => new Date(nowMs).toISOString(),
+      defaultTtlSeconds: 10,
+    });
+    const opened = store.open({
+      priceSheet: baseSheet(),
+      payTo: PAY_TO,
+      maxSecondsPerSegment: 60,
+      maxUnitsPerSegment: 1000,
+      segmentProducer: () => ({
+        data: "",
+        secondsDelivered: 0,
+        unitsDelivered: 0,
+      }),
+    });
+    nowMs += 11_000;
+    const ended = store.sweepAbandoned(10);
+    expect(ended).toHaveLength(1);
+    expect(ended[0]?.id).toBe(opened.streamId);
+    expect(store.get(opened.streamId)?.endReason).toBe("abandoned");
+  });
+
+  it("touch() resets idle so a live stream is not swept", () => {
+    let nowMs = 1_700_000_000_000;
+    const store = createStreamStore({
+      now: () => new Date(nowMs).toISOString(),
+      defaultTtlSeconds: 3600,
+    });
+    const opened = store.open({
+      priceSheet: baseSheet(),
+      payTo: PAY_TO,
+      maxSecondsPerSegment: 60,
+      maxUnitsPerSegment: 1000,
+      segmentProducer: () => ({
+        data: "",
+        secondsDelivered: 0,
+        unitsDelivered: 0,
+      }),
+    });
+    nowMs += 5_000;
+    store.touch(opened.streamId);
+    nowMs += 6_000;
+    expect(store.sweepAbandoned(10)).toHaveLength(0);
+    nowMs += 5_000;
+    expect(store.sweepAbandoned(10)).toHaveLength(1);
+  });
+});

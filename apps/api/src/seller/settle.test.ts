@@ -237,6 +237,10 @@ describe("settle - classification by cause", () => {
     await recover.retry("op-retry");
     await recover.drain();
     expect((await store.getIntent("op-retry"))?.status).toBe("confirmed");
+    const life = await lookupByNonce(store, "op-retry");
+    const events = life?.all.map((e) => e.event) ?? [];
+    expect(events).toContain("settlement.retry");
+    expect(events).toContain("settlement.recovered");
   });
 
   it("invokes onFailed and does not invoke onConfirmed on revert", async () => {

@@ -21,9 +21,9 @@ This file tracks missing, incomplete, and unverified project capabilities. Items
 - [x] Add a durable settlement-intent/outbox queue so process termination cannot lose work between delivery and settlement. _(`settlement_intents` table; seller `putIntent` before returning 200; queue drives pending → submitted → confirmed|failed.)_
 - [x] Add startup reconciliation for submitted, pending, timed-out, and unknown settlement intents. _(`seller.reconcileSettlements()` / `queue.reconcile()`; runtime calls it on boot. Pending resubmits, submitted resumes confirmation, deliveries with no intent are reported as `unknown`.)_
 - [x] Add retry/backoff and operator recovery for transient RPC failures and failed settlements. _(transient submit errors retry with exponential backoff; terminal out-of-gas/revert do not. `retrySettlement(nonce)` moves a failed intent back to pending.)_
-- [ ] Add graceful shutdown: stop new delivery, persist or drain settlement work, close SSE connections, and close the ledger cleanly.
-- [ ] Add stream idle/expiry cleanup for abandoned in-memory streams.
-- [ ] Add explicit ledger events for stream ended, abandoned, settlement retry, and recovery outcomes.
+- [x] Add graceful shutdown: stop new delivery, persist or drain settlement work, close SSE connections, and close the ledger cleanly. _(`seller.shutdown()` refuses new open/next, ends leftover streams, drains the outbox; `console.close()` aborts SSE; runtime `close()` clears the sweep timer and closes the ledger. SIGTERM/SIGINT wait up to 10s.)_
+- [x] Add stream idle/expiry cleanup for abandoned in-memory streams. _(`StreamStore.sweepAbandoned` + `seller.sweepAbandoned`; runtime interval `STREAM_SWEEP_INTERVAL_MS` default 30s. Past `expiresAt` or idle TTL ends the stream as `abandoned`.)_
+- [x] Add explicit ledger events for stream ended, abandoned, settlement retry, and recovery outcomes. _(`stream.ended` on endAll/price-change; `stream.abandoned` on idle/expiry sweep; `settlement.retry` / `settlement.recovered` on reconcile and `retrySettlement`.)_
 
 ## P1 — on-chain session lifecycle
 

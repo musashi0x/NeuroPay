@@ -318,6 +318,58 @@ export async function recordStreamEnded(
   );
 }
 
+/** Record that a stream was abandoned (idle or past its TTL). */
+export async function recordStreamAbandoned(
+  input: StreamEndedInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("stream.abandoned", input, {
+      detail: input.detail ?? `stream abandoned (${input.reason})`,
+      amount: input.amount ?? null,
+    }),
+  );
+}
+
+export type SettlementRetryInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  detail?: string | null;
+};
+
+export type SettlementRecoveredInput = WriteInput & {
+  amount: SmallestUnits;
+  nonce: string;
+  transactionHash?: Hex | null;
+  detail?: string | null;
+};
+
+/** Record an operator or startup retry of a settlement intent. */
+export async function recordSettlementRetry(
+  input: SettlementRetryInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("settlement.retry", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      detail: input.detail ?? "settlement retry",
+    }),
+  );
+}
+
+/** Record that a retried or reconciled settlement confirmed. */
+export async function recordSettlementRecovered(
+  input: SettlementRecoveredInput,
+): Promise<EventResult> {
+  return input.store.append(
+    baseInput("settlement.recovered", input, {
+      amount: input.amount,
+      nonce: input.nonce,
+      transactionHash: input.transactionHash ?? null,
+      detail: input.detail ?? "settlement recovered",
+    }),
+  );
+}
+
 /** Record an accrual tick. */
 export async function recordAccrual(
   input: AccrualRecordedInput,
@@ -495,7 +547,6 @@ export async function recordCorrection(
       : { ...base, timestamp: overrides.timestamp },
   );
 }
-
 
 /**
  * P0 payment.settlement.* lifecycle.

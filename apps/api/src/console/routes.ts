@@ -82,12 +82,16 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
       }, 15_000);
 
       await new Promise<void>((resolve) => {
-        stream.onAbort(() => {
+        const abort = (): void => {
+          if (closed) return;
           closed = true;
           clearInterval(heartbeat);
           unsubscribe();
+          unbindAbort();
           resolve();
-        });
+        };
+        const unbindAbort = deps.console.registerSseAbort(abort);
+        stream.onAbort(abort);
       });
     });
   });

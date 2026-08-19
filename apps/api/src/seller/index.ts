@@ -21,7 +21,12 @@ import {
   type Clock,
   type MeteringConfig,
 } from "@neuro-pay/metering";
-import { type LedgerStore } from "@neuro-pay/ledger";
+import {
+  recordStreamAbandoned,
+  recordStreamEnded,
+  recordStreamOpened,
+  type LedgerStore,
+} from "@neuro-pay/ledger";
 import type {
   Address,
   Hex,
@@ -114,7 +119,17 @@ export type SellerOutcome =
       classification: PaymentFailureClassification;
       detail: string;
       resource: string;
-    };
+    }
+  | { kind: "unavailable"; status: 503; reason: "shutting-down" };
+
+/** Thrown by `openStream` after `shutdown()` has started. */
+export class SellerUnavailableError extends Error {
+  readonly reason = "shutting-down" as const;
+  constructor(message: string = "seller is shutting down") {
+    super(message);
+    this.name = "SellerUnavailableError";
+  }
+}
 
 /**
  * The request the seller answers. It deliberately is HTTP-agnostic so the
@@ -166,6 +181,15 @@ export type Seller = {
   reconcileSettlements(): Promise<import("./settle.js").ReconciliationReport>;
   /** Operator recovery: resubmit a failed settlement intent. */
   retrySettlement(nonce: string): Promise<{ transactionHash: Hex }>;
+  /** False after `shutdown()`; open and next-segment refuse new work. */
+  isAccepting(): boolean;
+  /**
+   * Stop new delivery, end leftover streams, drain the settlement
+   * outbox. Does not close the ledger — the runtime does that after.
+   */
+  shutdown(): Promise<void>;
+  /** End idle or expired in-memory streams and record `stream.abandoned`. */
+  sweepAbandoned(): Promise<string[]>;
   /** Console inspection: every known stream without the producer callback. */
   inspectStreams(): StreamInspection[];
   /** End every active stream. Used by the kill switch. */
@@ -205,6 +229,11 @@ export type CreateSellerInput = {
   now?: () => IsoTimestamp;
   /** Optional explicit price registry; tests override. */
   priceRegistry?: PriceRegistry;
+  /**
+   * Seconds without activity before `sweepAbandoned` ends a stream.
+   * Defaults to the stream TTL.
+   */
+  idleTtlSeconds?: number;
 };
 
 /** Build a fully composed seller. */
@@ -255,6 +284,47 @@ export function createSeller(input: CreateSellerInput): Seller {
     }),
   });
   const enqueued = new Set<Promise<unknown>>();
+  let accepting = true;
+  const idleTtlSeconds =
+    input.idleTtlSeconds ?? input.config.streamTtlSeconds ?? 3600;
+
+  function streamCtx(streamId: string) {
+    return {
+      streamId,
+      sessionPublicKey: null as Hex | null,
+      chainId: input.config.chainId,
+      token: input.config.token,
+      tokenDecimals: input.config.tokenDecimals,
+    };
+  }
+
+  function noteClosed(
+    streamId: string,
+    reason: StreamEndReason,
+    kind: "ended" | "abandoned",
+    detail?: string,
+  ): Promise<void> {
+    const write =
+      kind === "abandoned" ? recordStreamAbandoned : recordStreamEnded;
+    return write({
+      store: input.store,
+      ctx: streamCtx(streamId),
+      reason,
+      ...(detail !== undefined ? { detail } : {}),
+    }).then(
+      () => undefined,
+      (err: unknown) => {
+        logger.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            streamId,
+            reason,
+          },
+          "failed to record stream close",
+        );
+      },
+    );
+  }
 
   /**
    * Close every active stream on a price change (5.10). The price
@@ -265,6 +335,7 @@ export function createSeller(input: CreateSellerInput): Seller {
     const ended: StreamOpenResponse[] = [];
     for (const record of activeStreams()) {
       streams.end(record.id, "price-changed");
+      noteClosed(record.id, "price-changed", "ended");
       ended.push({
         streamId: record.id,
         priceSheet: record.priceSheet,
@@ -308,6 +379,7 @@ export function createSeller(input: CreateSellerInput): Seller {
    */
   const seller: Seller = {
     openStream({ requestUrl, clock: callerClock }) {
+      if (!accepting) throw new SellerUnavailableError();
       const useClock = callerClock ?? clock;
       const openOptions = {
         priceSheet: priceRegistry.current,
@@ -323,11 +395,26 @@ export function createSeller(input: CreateSellerInput): Seller {
       };
       const response = streams.open(openOptions);
       rememberActive(response.streamId);
+      void recordStreamOpened({
+        store: input.store,
+        ctx: streamCtx(response.streamId),
+      }).catch((err: unknown) => {
+        logger.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            streamId: response.streamId,
+          },
+          "failed to record stream.opened",
+        );
+      });
       void requestUrl;
       return response;
     },
 
     async nextSegment(req: SegmentRequest): Promise<SellerOutcome> {
+      if (!accepting) {
+        return { kind: "unavailable", status: 503, reason: "shutting-down" };
+      }
       const useClock = req.clock ?? clock;
       const streamId = req.streamId;
       if (!streamId) {
@@ -355,6 +442,16 @@ export function createSeller(input: CreateSellerInput): Seller {
           kind: "not-found",
           status: 404,
           reason: "stream ended or unknown",
+        };
+      }
+      streams.touch(streamId);
+      if (Date.parse(record.expiresAt) <= useClock.now()) {
+        streams.end(streamId, "abandoned");
+        noteClosed(streamId, "abandoned", "abandoned", "stream ttl elapsed");
+        return {
+          kind: "not-found",
+          status: 404,
+          reason: "stream abandoned",
         };
       }
 
@@ -646,9 +743,28 @@ export function createSeller(input: CreateSellerInput): Seller {
       for (const record of streams.list()) {
         if (record.endReason !== null) continue;
         streams.end(record.id, reason);
+        noteClosed(record.id, reason, "ended");
         ended.push(record.id);
       }
       return ended;
+    },
+
+    isAccepting() {
+      return accepting;
+    },
+
+    async shutdown() {
+      accepting = false;
+      this.endAll("abandoned");
+      await this.drainSettlements();
+    },
+
+    async sweepAbandoned() {
+      const ended = streams.sweepAbandoned(idleTtlSeconds);
+      await Promise.all(
+        ended.map((record) => noteClosed(record.id, "abandoned", "abandoned")),
+      );
+      return ended.map((record) => record.id);
     },
   };
 

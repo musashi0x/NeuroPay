@@ -224,6 +224,20 @@ describe("console API", () => {
     expect(seen[0]).toBeTruthy();
   });
 
+  it("close() aborts registered SSE connections and drops subscribers", () => {
+    const { consoleService } = harness();
+    let aborted = false;
+    const stop = consoleService.subscribe(() => {
+      /* live listener */
+    });
+    consoleService.registerSseAbort(() => {
+      aborted = true;
+    });
+    consoleService.close();
+    expect(aborted).toBe(true);
+    stop();
+  });
+
   it("never defaults CORS to * and never returns secrets", async () => {
     const { app } = harness();
     const response = await app.request("/v1/session", {

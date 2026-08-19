@@ -35,6 +35,8 @@ import {
   lookupByNonce,
   recordSettlementConfirmed,
   recordSettlementFailed,
+  recordSettlementRecovered,
+  recordSettlementRetry,
   recordSettlementSubmitted,
 } from "@neuro-pay/ledger";
 
@@ -224,6 +226,7 @@ export function createSettlementQueue(input: {
   const startJob = (
     s: SettlementInput,
     resumeHash: Hex | null,
+    source: "live" | "reconcile" | "retry" = "live",
   ): Promise<SettlementSubmitted> => {
     const existingJob = jobs.get(s.nonce);
     if (existingJob !== undefined) return existingJob;
@@ -236,6 +239,15 @@ export function createSettlementQueue(input: {
     jobs.set(s.nonce, submittedP);
 
     const job = (async () => {
+      if (source !== "live") {
+        await recordSettlementRetry({
+          store: input.store,
+          ctx: ctxFor(s),
+          amount: s.amount,
+          nonce: s.nonce,
+          detail: `source=${source}`,
+        });
+      }
       let submitted: SettlementSubmitted;
       if (resumeHash !== null) {
         submitted = { transactionHash: resumeHash };
@@ -290,6 +302,16 @@ export function createSettlementQueue(input: {
           lastError: null,
         });
         await invokeHook(() => input.hooks?.onConfirmed?.(s));
+        if (source !== "live") {
+          await recordSettlementRecovered({
+            store: input.store,
+            ctx: ctxFor(s),
+            amount: s.amount,
+            nonce: s.nonce,
+            transactionHash: submitted.transactionHash,
+            detail: `source=${source}`,
+          });
+        }
       } catch (cause) {
         await markFailed(input, s, cause);
       } finally {
@@ -341,7 +363,7 @@ export function createSettlementQueue(input: {
         const s = settlementInputFromIntent(intent);
         const resumeHash =
           intent.status === "submitted" ? intent.transactionHash : null;
-        void startJob(s, resumeHash).catch(() => {
+        void startJob(s, resumeHash, "reconcile").catch(() => {
           // Failure is recorded on the intent; reconcile itself should
           // not reject because one nonce failed.
         });
@@ -366,7 +388,7 @@ export function createSettlementQueue(input: {
           lastError: null,
         });
         return {
-          transactionHash: (await startJob(s, intent.transactionHash))
+          transactionHash: (await startJob(s, intent.transactionHash, "retry"))
             .transactionHash,
         };
       }
@@ -374,7 +396,10 @@ export function createSettlementQueue(input: {
         status: "pending",
         lastError: null,
       });
-      return this.enqueue(s);
+      await persistPendingIntent(input.store, s);
+      return {
+        transactionHash: (await startJob(s, null, "retry")).transactionHash,
+      };
     },
   };
 }

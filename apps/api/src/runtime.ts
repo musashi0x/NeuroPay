@@ -55,7 +55,7 @@ import { logger } from "./logger.js";
 export type PaymentRuntime = {
   console: ConsoleService;
   seller: Seller;
-  close: () => void;
+  close: () => Promise<void>;
 };
 
 export function tryCreateRuntime(
@@ -118,10 +118,29 @@ export function tryCreateRuntime(
     );
   });
 
+  const sweepMs = Number.parseInt(env.STREAM_SWEEP_INTERVAL_MS ?? "30000", 10);
+  const sweepTimer = setInterval(
+    () => {
+      void seller.sweepAbandoned().catch((err: unknown) => {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "abandoned-stream sweep failed",
+        );
+      });
+    },
+    Number.isFinite(sweepMs) && sweepMs > 0 ? sweepMs : 30_000,
+  );
+  sweepTimer.unref?.();
+
   return {
     console: consoleService,
     seller,
-    close: () => ledger.close(),
+    close: async () => {
+      clearInterval(sweepTimer);
+      await seller.shutdown();
+      consoleService.close();
+      ledger.close();
+    },
   };
 }
 

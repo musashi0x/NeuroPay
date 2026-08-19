@@ -63,6 +63,9 @@ First write wins. Accrued amounts travel as decimal TEXT like ledger
 confirmed / failed). Status is updated in place; the append-only event
 log remains the audit trail.
 
+Stream close and settlement recovery also write `stream.ended`,
+`stream.abandoned`, `settlement.retry`, and `settlement.recovered`.
+
 ## API surface
 
 ```ts

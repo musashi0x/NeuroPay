@@ -19,7 +19,7 @@ import {
   type Settler,
 } from "./settle.js";
 import { IS_VALID_SIGNATURE_MAGIC, type Verifier } from "./verify.js";
-import { createSeller, type Seller } from "./index.js";
+import { createSeller, SellerUnavailableError, type Seller } from "./index.js";
 import { Buffer } from "node:buffer";
 
 const TOKEN: Address = "0x55d398326f99059f775a46c830bb1ec1b4f2e75d";
@@ -413,5 +413,60 @@ describe("seller composition root", () => {
 
     const after = seller.inspectStreams()[0]!;
     expect(after.meter.accruedUnpaid).toBeGreaterThan(0n);
+  });
+
+  it("shutdown stops new delivery and ends leftover streams", async () => {
+    const { seller } = buildSeller({});
+    const opened = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    await seller.shutdown();
+    expect(seller.isAccepting()).toBe(false);
+    expect(seller.inspectStreams()[0]?.endReason).toBe("abandoned");
+    expect(() =>
+      seller.openStream({ requestUrl: "https://api.example/v1/streams" }),
+    ).toThrow(SellerUnavailableError);
+    const next = await seller.nextSegment({
+      streamId: opened.streamId,
+      headers: { get: () => null },
+      requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
+    });
+    expect(next.kind).toBe("unavailable");
+  });
+
+  it("sweepAbandoned records stream.abandoned for expired streams", async () => {
+    let nowMs = 1_700_000_000_000;
+    const store = freshLedger();
+    const seller = createSeller({
+      config: {
+        metering: metering(),
+        payTo: PAY_TO,
+        chainId: 97,
+        token: TOKEN,
+        tokenDecimals: 18,
+        streamTtlSeconds: 10,
+        maxSecondsPerSegment: 10,
+        maxUnitsPerSegment: 10,
+      },
+      store,
+      verifier: async () => IS_VALID_SIGNATURE_MAGIC,
+      settler: createInMemorySettler({ defaultBehavior: "confirm" }),
+      clock: { now: () => nowMs },
+      now: () => new Date(nowMs).toISOString(),
+      idleTtlSeconds: 10,
+      initialPriceSheet: {
+        perCall: 100n,
+        perSecond: 10n,
+        perUnit: 1n,
+        unitName: "token",
+      },
+    });
+    seller.openStream({ requestUrl: "https://api.example/v1/streams" });
+    nowMs += 11_000;
+    const ended = await seller.sweepAbandoned();
+    expect(ended).toHaveLength(1);
+    const events = await store.entries();
+    expect(events.some((e) => e.event === "stream.opened")).toBe(true);
+    expect(events.some((e) => e.event === "stream.abandoned")).toBe(true);
   });
 });

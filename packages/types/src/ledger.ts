@@ -9,6 +9,9 @@ import type {
 export type LedgerEventType =
   | "stream.opened"
   | "stream.ended"
+  | "stream.abandoned"
+  | "settlement.retry"
+  | "settlement.recovered"
   | "accrual.recorded"
   | "payment.demanded"
   | "payment.refused"

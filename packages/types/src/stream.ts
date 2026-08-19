@@ -9,7 +9,8 @@ export type StreamEndReason =
   | "session-revoked"
   | "budget-exhausted"
   | "exposure-limit"
-  | "seller-error";
+  | "seller-error"
+  | "abandoned";
 
 /**
  * The response to opening a stream (`POST /v1/streams`).
