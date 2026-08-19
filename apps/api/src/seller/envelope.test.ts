@@ -59,7 +59,7 @@ describe("envelope - X-PAYMENT / PAYMENT-SIGNATURE discrimination", () => {
     if (picked.kind === "ok") expect(picked.header).toBe("payment-signature");
   });
 
-  it("returns 'multiple' when both headers are populated", () => {
+  it("accepts both headers when they carry the identical payload — the compliant b402 buyer sends both for facilitator compatibility", () => {
     const payload = makeEnvelope({
       from: FROM,
       permit: { hash: HASH, signature: SIGNATURE },
@@ -67,6 +67,28 @@ describe("envelope - X-PAYMENT / PAYMENT-SIGNATURE discrimination", () => {
     const headers = new HeaderBag({
       "X-PAYMENT": payload,
       "PAYMENT-SIGNATURE": payload,
+    });
+    const picked = extractEnvelope(headers);
+    expect(picked.kind).toBe("ok");
+    if (picked.kind === "ok") {
+      expect(picked.header).toBe("x-payment");
+      expect(picked.payload).toBe(payload);
+    }
+  });
+
+  it("returns 'multiple' when both headers carry different payloads", () => {
+    const headers = new HeaderBag({
+      "X-PAYMENT": makeEnvelope({
+        from: FROM,
+        permit: { hash: HASH, signature: SIGNATURE },
+      }),
+      "PAYMENT-SIGNATURE": makeEnvelope({
+        from: FROM,
+        permit: {
+          hash: HASH,
+          signature: ("0x" + "33".repeat(65)) as `0x${string}`,
+        },
+      }),
     });
     const picked = extractEnvelope(headers);
     expect(picked.kind).toBe("multiple");

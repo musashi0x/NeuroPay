@@ -93,8 +93,13 @@ export type ExtractEnvelopeResult =
 
 /**
  * Read the envelope from a Hono-style header bag. Tries `X-PAYMENT` first,
- * then `PAYMENT-SIGNATURE`; returns `multiple` only when both carry
- * non-empty values (a buyer picking both is an error).
+ * then `PAYMENT-SIGNATURE`.
+ *
+ * A compliant b402 buyer sends both headers carrying the identical
+ * base64url payload (see the module docstring) for facilitator
+ * compatibility — that is not an ambiguity, and picks `X-PAYMENT` as the
+ * canonical header. `multiple` is reserved for headers that disagree:
+ * two different payloads is a real ambiguity the parser cannot resolve.
  */
 export function extractEnvelope(headers: {
   get(name: string): string | null;
@@ -110,7 +115,8 @@ export function extractEnvelope(headers: {
     }
   }
   if (candidates.length === 0) return { kind: "missing" };
-  if (candidates.length > 1) {
+  const distinctPayloads = new Set(candidates.map((c) => c.payload));
+  if (distinctPayloads.size > 1) {
     return { kind: "multiple", headers: candidates.map((c) => c.header) };
   }
   const only = candidates[0]!;
