@@ -4,15 +4,15 @@ This file tracks missing, incomplete, and unverified project capabilities. Items
 
 ## P0 — payment correctness and safety
 
-- [ ] Replace the accepting-all verifier in `apps/api/src/runtime.ts` with real ERC-1271 verification through the configured Permit2 signature checker.
-- [ ] Add integration tests proving invalid, expired, revoked, wrong-chain, wrong-token, wrong-recipient, and underpaid envelopes are rejected by the production composition root.
-- [ ] Replace the in-memory settler in `apps/api/src/runtime.ts` with a chain-backed settler that submits `Permit2.permitWitnessTransferFrom`.
-- [ ] Record settlement submission, confirmation, revert, timeout, and gasless-settler failures from the real chain path.
-- [ ] Connect confirmed settlement to `recordSettle` so `accruedUnpaid` decreases by the settled amount.
-- [ ] Define and implement failed-settlement accounting, exposure handling, and recovery semantics.
-- [ ] Ensure settlement confirmation releases seller exposure; ensure failed settlements remain visible as unrecovered exposure.
-- [ ] Wire `fetchWithX402` into a real buyer/agent process that loads a persisted session and signs payments server-side.
-- [ ] Add a real signed-payment demo separate from `apps/api/scripts/demo-stream.ts`'s synthetic placeholder envelope.
+- [x] Replace the accepting-all verifier in `apps/api/src/runtime.ts` with real ERC-1271 verification through the configured Permit2 signature checker. _(commit d0deea — `chain-verifier.ts` wraps `buildPermit2Verifier` with `assertPermit2Deployed`; runtime wires it unconditionally.)_
+- [ ] Add integration tests proving invalid, expired, revoked, wrong-chain, wrong-token, wrong-recipient, and underpaid envelopes are rejected by the production composition root. _(partial — `integration.test.ts` covers 5/7 paths: invalid, expired, wrong-chain, wrong-token, wrong-recipient. `revoked` not tested. `underpaid` removed because the seller's demand-derivation uses `witness.amount` when present, so a seller-level underpaid assertion requires changing that logic — coverage stays in `verify.test.ts`.)_
+- [x] Replace the in-memory settler in `apps/api/src/runtime.ts` with a chain-backed settler that submits `Permit2.permitWitnessTransferFrom`. _(commit d0deea — `chain-settler.ts` drives `permitWitnessTransferFrom` via viem `writeContract`; runtime wires it when `SETTLER_PRIVATE_KEY` + `RPC_URL` are configured.)_
+- [x] Record settlement submission, confirmation, revert, timeout, and gasless-settler failures from the real chain path. _(commit d0deea — `recordPaymentSettlement{Submitted,Confirmed,Failed,Lost}` helpers in `packages/ledger/src/events.ts`, wired in `chain-settler.ts`; round-trip covered in `payment-settlement.test.ts`.)_
+- [ ] Connect confirmed settlement to `recordSettle` so `accruedUnpaid` decreases by the settled amount. _(partial — `settlement-hooks.ts` defines `onSettlementConfirmed` but the seller composition root does NOT attach the hooks; the existing `exposure.release()` after `queue.enqueue(...)` is unchanged at `seller/index.ts:535`. `accruedUnpaid` decrement is not happening on chain confirmation yet.)_
+- [ ] Define and implement failed-settlement accounting, exposure handling, and recovery semantics. _(partial — hooks defined in `settlement-hooks.ts` (`attachSettlementHooks`, `onSettlementFailed`) but not wired into the seller; failed settlements stay visible in the ledger only via the `payment.settlement.failed` event the settler writes, not via the exposure accounting layer.)_
+- [ ] Ensure settlement confirmation releases seller exposure; ensure failed settlements remain visible as unrecovered exposure. _(partial — exposure still releases at `seller/index.ts:535` in the `.then` callback; failed-settlement exposure retention is not wired through the hooks module. Behaviour matches the spec for confirmed; failed path needs seller integration.)_
+- [ ] Wire `fetchWithX402` into a real buyer/agent process that loads a persisted session and signs payments server-side. _(partial — `demo-real-signing.ts` loads `PersistedSession` via `SessionStore` and opens a stream against the running API, but the actual `fetchWithX402` call is documented in a comment rather than executed: the script does not register a `signerSource`, so the live SDK `Session` (required by `buildPaymentContext`) does not materialize.)_
+- [ ] Add a real signed-payment demo separate from `apps/api/scripts/demo-stream.ts`'s synthetic placeholder envelope. _(partial — `demo-real-signing.ts` exists at `apps/api/scripts/demo-real-signing.ts` and is wired as `pnpm --filter @neuro-pay/api demo:real`. It opens a real stream but does not yet sign; signing requires a `signerSource` registration step not present in the script.)
 
 ## P1 — delivery, durability, and recovery
 
