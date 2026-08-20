@@ -185,7 +185,17 @@ export type PaymentRejectedInput = WriteInput & {
  */
 export type SegmentDeliveredInput = WriteInput & {
   amount: SmallestUnits;
-  nonce: string;
+  /**
+   * The authorization nonce, when the segment was paid for.
+   *
+   * `null` is the threshold-or-tick model working as designed: the
+   * seller delivers on credit until `accruedUnpaid` reaches the
+   * settlement threshold, and those deliveries carry no payment and so
+   * no nonce. Recording them is what makes the accrual auditable — the
+   * demand that eventually fires has to be reconcilable against the
+   * segments that produced it.
+   */
+  nonce: string | null;
   secondsDelivered: number;
   unitsDelivered: number;
 };

@@ -23,6 +23,7 @@ import {
 } from "@neuro-pay/metering";
 import {
   recordPaymentRejected,
+  recordSegmentDelivered,
   recordStreamAbandoned,
   recordStreamEnded,
   recordStreamOpened,
@@ -337,6 +338,125 @@ export function createSeller(input: CreateSellerInput): Seller {
   }
 
   /**
+   * Deliver a segment that nothing is owed for yet.
+   *
+   * The unpaid path is deliberately thinner than the paid one, and each
+   * omission is a consequence of there being no payment rather than a
+   * shortcut:
+   *
+   *  - **No idempotency record.** Idempotency is keyed by the
+   *    authorization nonce, and an unpaid request has none. It also has
+   *    nothing to protect: replay exists so a buyer cannot be charged
+   *    twice for one nonce, and nobody was charged here.
+   *  - **No settlement.** There is no authorization to settle.
+   *  - **No exposure slot.** Exposure bounds in-flight settlements. The
+   *    credit extended here is bounded instead by
+   *    `settlementThreshold` — once the accrual reaches it the policy
+   *    demands payment and this path stops being taken.
+   *
+   * The ledger entry is still written, with a null nonce and a zero
+   * amount. Without it the demand that eventually fires would be
+   * unreconcilable against the segments that produced it.
+   */
+  function deliverOnCredit(
+    streamId: string,
+    record: StreamRecord,
+    clock: Clock,
+  ): SellerOutcome {
+    const produced = produceSegment(streamId, record);
+    if (produced === null) {
+      return {
+        kind: "not-found",
+        status: 404,
+        reason: "stream ended before segment request",
+      };
+    }
+
+    const nextMeter = streams.recordDelivery(
+      streamId,
+      {
+        secondsDelivered: produced.secondsDelivered,
+        unitsDelivered: produced.unitsDelivered,
+      },
+      clock,
+    );
+    if (!nextMeter) {
+      return { kind: "not-found", status: 404, reason: "stream ended" };
+    }
+
+    const segment = {
+      streamId,
+      sequence: produced.sequence,
+      data: produced.data,
+      secondsDelivered: produced.secondsDelivered,
+      unitsDelivered: produced.unitsDelivered,
+      accruedUnpaid: nextMeter.accruedUnpaid,
+      totalAccrued: nextMeter.totalAccrued,
+      streamEnded: false,
+      endReason: null as StreamEndReason | null,
+    };
+
+    void recordSegmentDelivered({
+      store: input.store,
+      ctx: streamCtx(streamId),
+      amount: 0n as SmallestUnits,
+      nonce: null,
+      secondsDelivered: produced.secondsDelivered,
+      unitsDelivered: produced.unitsDelivered,
+      detail: `segment delivered on credit: ${produced.secondsDelivered}s, ${produced.unitsDelivered}u (accrued ${nextMeter.accruedUnpaid})`,
+    }).catch((err: unknown) => {
+      logger.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          streamId,
+          sequence: produced.sequence,
+        },
+        "failed to record segment.delivered for an unpaid segment",
+      );
+    });
+
+    return { kind: "delivered", status: 200, body: segment };
+  }
+
+  /**
+   * Take the next sequence number and produce its segment, clamped to
+   * the configured per-segment ceilings. Returns `null` when the stream
+   * ended between the request arriving and the sequence being taken.
+   *
+   * Shared by the paid and unpaid paths so the two cannot drift on what
+   * a segment is or how it is bounded.
+   */
+  function produceSegment(
+    streamId: string,
+    record: StreamRecord,
+  ): {
+    sequence: number;
+    data: string;
+    secondsDelivered: number;
+    unitsDelivered: number;
+  } | null {
+    const sequence = streams.nextSequence(streamId);
+    if (sequence === null) return null;
+    const maxSeconds = input.config.maxSecondsPerSegment ?? 60;
+    const maxUnits = input.config.maxUnitsPerSegment ?? 1000;
+    const produced = record.segmentProducer({
+      streamId,
+      sequence,
+      maxSeconds,
+      maxUnits,
+    });
+    return {
+      sequence,
+      data: produced.data,
+      secondsDelivered: Math.max(
+        0,
+        Math.min(produced.secondsDelivered, maxSeconds),
+      ),
+      unitsDelivered: Math.max(0, Math.min(produced.unitsDelivered, maxUnits)),
+    };
+  }
+
+  /**
    * Write the `payment.rejected` audit entry for a refused envelope.
    *
    * Every 402 the seller returns for a *reason* lands here. Without it
@@ -526,9 +646,19 @@ export function createSeller(input: CreateSellerInput): Seller {
             input.config.metering,
             useClock,
           );
-          const demand = decision.demand;
+          // Threshold-or-tick: the seller delivers on credit until
+          // `accruedUnpaid` reaches the threshold or the tick elapses.
+          // A zero demand means nothing is owed *yet*, so answering 402
+          // here would ask the buyer to sign for nothing — one wasted
+          // signature and one zero-value settlement per segment, which
+          // is precisely the per-unit settlement cost the design exists
+          // to avoid. Deliver instead, and let the accrual bring the
+          // demand around.
+          if (decision.demand === 0n) {
+            return deliverOnCredit(streamId, record, useClock);
+          }
           const body = buildPaymentRequired(
-            requirementsFor(req.requestUrl, record.priceSheet, demand),
+            requirementsFor(req.requestUrl, record.priceSheet, decision.demand),
           );
           return {
             kind: "payment-required",
@@ -629,8 +759,8 @@ export function createSeller(input: CreateSellerInput): Seller {
         };
       }
 
-      const sequence = streams.nextSequence(streamId);
-      if (sequence === null) {
+      const produced = produceSegment(streamId, record);
+      if (produced === null) {
         exposure.release();
         return {
           kind: "not-found",
@@ -638,27 +768,7 @@ export function createSeller(input: CreateSellerInput): Seller {
           reason: "stream ended before segment request",
         };
       }
-
-      const produced = record.segmentProducer({
-        streamId: streamId,
-        sequence,
-        maxSeconds: input.config.maxSecondsPerSegment ?? 60,
-        maxUnits: input.config.maxUnitsPerSegment ?? 1000,
-      });
-      const secondsDelivered = Math.max(
-        0,
-        Math.min(
-          produced.secondsDelivered,
-          input.config.maxSecondsPerSegment ?? 60,
-        ),
-      );
-      const unitsDelivered = Math.max(
-        0,
-        Math.min(
-          produced.unitsDelivered,
-          input.config.maxUnitsPerSegment ?? 1000,
-        ),
-      );
+      const { sequence, secondsDelivered, unitsDelivered } = produced;
 
       // Record the verification + delivery. The verification call writes
       // `payment.verified` first; then `recordSegmentDelivery` writes the

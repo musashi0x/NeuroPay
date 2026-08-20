@@ -406,9 +406,9 @@ describe("seller integration — every rejection is audited", () => {
       requestUrl: `https://api.example/v1/streams/${streamId}/next`,
     });
 
-    // A bare 402 quoting the price is the protocol working, not a
-    // refusal. Auditing it would bury the real refusals in noise.
-    expect(out.kind).toBe("payment-required");
+    // Delivering on credit is the protocol working, not a refusal.
+    // Auditing it as one would bury the real refusals in noise.
+    expect(out.kind).toBe("delivered");
     expect(await rejections(store)).toHaveLength(0);
   });
 
@@ -449,6 +449,156 @@ describe("seller integration — every rejection is audited", () => {
       expect(out.classification).toBe("verification-failed");
       expect(out.status).toBe(402);
     }
+  });
+});
+
+describe("seller integration — threshold-or-tick, not pay-per-segment", () => {
+  const url = (id: string) => `https://api.example/v1/streams/${id}/next`;
+  const unpaid = { get: () => null };
+
+  it("delivers on credit while nothing is owed yet", async () => {
+    const { seller } = buildSeller();
+    const streamId = openStream(seller);
+
+    const out = await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+
+    // The old behaviour was a 402 quoting `maxAmountRequired: "0"`,
+    // which asked the buyer to sign for nothing and then settle it on
+    // chain — one wasted signature and one zero-value transfer per
+    // segment, the exact per-unit cost threshold-or-tick exists to
+    // avoid.
+    expect(out.kind).toBe("delivered");
+  });
+
+  it("demands payment once the accrual reaches the threshold", async () => {
+    // One segment accrues 100 (perCall) + 10x10 (perSecond) + 1x10
+    // (perUnit) = 210, well past the 100 threshold.
+    const { seller } = buildSeller();
+    const streamId = openStream(seller);
+
+    const first = await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+    expect(first.kind).toBe("delivered");
+
+    const second = await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+    expect(second.kind).toBe("payment-required");
+    if (second.kind !== "payment-required") return;
+
+    const demanded = second.body.accepts[0]?.maxAmountRequired;
+    expect(demanded).toBe(210n);
+  });
+
+  it("never quotes a zero-amount 402", async () => {
+    const { seller } = buildSeller();
+    const streamId = openStream(seller);
+
+    // Drive the stream well past the threshold and collect every 402.
+    const quotes: bigint[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const out = await seller.nextSegment({
+        streamId,
+        headers: unpaid,
+        requestUrl: url(streamId),
+      });
+      if (out.kind === "payment-required") {
+        quotes.push(out.body.accepts[0]!.maxAmountRequired);
+      }
+    }
+
+    expect(quotes.length).toBeGreaterThan(0);
+    for (const q of quotes) expect(q).toBeGreaterThan(0n);
+  });
+
+  it("audits an unpaid delivery with a null nonce and a zero amount", async () => {
+    const { seller, store } = buildSeller();
+    const streamId = openStream(seller);
+
+    await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+
+    const entries = await store.entries();
+    const delivered = entries.filter((e) => e.event === "segment.delivered");
+    expect(delivered).toHaveLength(1);
+    // Null rather than a placeholder: nothing was authorized, so there
+    // is no nonce, and inventing one would put a key into the ledger no
+    // buyer ever sent.
+    expect(delivered[0]?.nonce).toBeNull();
+    expect(delivered[0]?.amount).toBe(0n);
+    expect(delivered[0]?.detail).toContain("on credit");
+  });
+
+  it("creates no settlement for a delivery nobody paid for", async () => {
+    const { seller, store } = buildSeller();
+    const streamId = openStream(seller);
+
+    await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+    await seller.drainSettlements();
+
+    expect(await store.listIntents()).toHaveLength(0);
+  });
+
+  it("still holds the full exposure budget after delivering on credit", async () => {
+    // Unpaid delivery takes no exposure slot: exposure bounds in-flight
+    // settlements, and there is no settlement here. The credit is
+    // bounded by the threshold instead.
+    const { seller } = buildSeller();
+    const streamId = openStream(seller);
+
+    const before = seller.exposureStats().inFlight;
+    await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+    expect(seller.exposureStats().inFlight).toBe(before);
+  });
+
+  it("advances the sequence across credit and paid deliveries alike", async () => {
+    const { seller } = buildSeller();
+    const streamId = openStream(seller);
+
+    const free = await seller.nextSegment({
+      streamId,
+      headers: unpaid,
+      requestUrl: url(streamId),
+    });
+    expect(free.kind).toBe("delivered");
+    const firstSeq =
+      free.kind === "delivered"
+        ? (free.body as { sequence: number }).sequence
+        : -1;
+
+    const { headers } = await realHeaders(4001n);
+    const paid = await seller.nextSegment({
+      streamId,
+      headers,
+      requestUrl: url(streamId),
+    });
+    expect(paid.kind).toBe("delivered");
+    const secondSeq =
+      paid.kind === "delivered"
+        ? (paid.body as { sequence: number }).sequence
+        : -1;
+
+    expect(secondSeq).toBe(firstSeq + 1);
   });
 });
 
