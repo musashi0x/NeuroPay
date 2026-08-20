@@ -27,6 +27,7 @@
         "FORK_RPC_URL",
         "RPC_URL",
         "EVM_TESTNET_RUNNER",
+        "EVM_TESTNET_REQUIRE",
         "FOUNDRY_IMAGE"
       ]
     }

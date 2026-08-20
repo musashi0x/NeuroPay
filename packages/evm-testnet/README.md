@@ -111,8 +111,17 @@ brew install foundry        # or https://getfoundry.sh
 FORK_RPC_URL=https://data-seed-prebsc-1-s1.bnbchain.org:8545 pnpm test:chain
 ```
 
-`EVM_TESTNET_RUNNER=native|docker|none` pins the choice. `FOUNDRY_IMAGE`
-overrides the container image.
+`FORK_RPC_URL` is also read directly out of `apps/api/.env` by the chain
+vitest configs, so it only has to be set once. Vitest does not load
+`.env` files into `process.env` by itself — Vite reads them but exposes
+only `VITE_`-prefixed keys — so without that wiring the obvious place to
+put the value is the one place the tests cannot see it.
+
+`EVM_TESTNET_RUNNER=native|docker|none` pins the runner and
+`FOUNDRY_IMAGE` overrides the container image. Turbo strips the
+environment by default; these four plus `EVM_TESTNET_REQUIRE` are on the
+`passThroughEnv` allowlist in `turbo.json` and nothing else reaches the
+suites.
 
 To drive the API against a chain by hand:
 
@@ -128,6 +137,16 @@ binary trains people to ignore it or delete it; one that prints
 "install foundry or start Docker, then re-run" gets run.
 
 The tradeoff is that a green `pnpm test` does not by itself mean the
-chain suites passed — they are not part of it. `pnpm test:chain` is the
-separate command, and CI has to run it explicitly for the coverage to
-count.
+chain suites passed — they are not part of it, and a skipped chain run
+reports "successful" while executing zero tests.
+
+That is what `EVM_TESTNET_REQUIRE=1` is for. With it set, a missing
+runner or fork endpoint is a hard failure naming exactly what is absent
+instead of a warning that scrolls past:
+
+```bash
+EVM_TESTNET_REQUIRE=1 pnpm test:chain
+```
+
+Set it in CI. Leave it unset locally, where skipping is the right
+behaviour for someone who never opted in.

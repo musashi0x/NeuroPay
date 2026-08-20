@@ -69,7 +69,14 @@ export {
 } from "./runner.js";
 export type { Runner, RunnerKind } from "./runner.js";
 
-export { chainAvailable, describeSkipReason, forkUrl } from "./suite.js";
+export {
+  announceChainSkip,
+  chainAvailable,
+  describeSkipReason,
+  forkUrl,
+} from "./suite.js";
+
+export { chainEnvFrom, parseEnvFile, CHAIN_ENV_KEYS } from "./env-file.js";
 
 export {
   TEST_TOKEN_ABI,

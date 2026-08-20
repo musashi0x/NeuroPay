@@ -44,7 +44,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   chainAvailable,
   createCheats,
-  describeSkipReason,
+  announceChainSkip,
   startLocalChain,
   TEST_TOKEN_ABI,
   TEST_TOKEN_BYTECODE,
@@ -86,10 +86,7 @@ const ERC20 = parseAbi([
   "function allowance(address,address) view returns (uint256)",
 ]);
 
-const skip = describeSkipReason();
-if (skip) {
-  console.warn(`[chain] skipping Permit2 settlement suite — ${skip}`);
-}
+announceChainSkip("Permit2 settlement suite");
 
 describe.skipIf(!chainAvailable())(
   "Permit2 settlement on a forked chain",

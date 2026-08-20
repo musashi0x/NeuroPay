@@ -48,7 +48,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   chainAvailable,
   createCheats,
-  describeSkipReason,
+  announceChainSkip,
   startLocalChain,
   type Cheats,
   type LocalChain,
@@ -69,12 +69,7 @@ const PAY_TO = "0x000000000000000000000000000000000000dEaD" as Address;
 /** Gas float for the throwaway account. Free here; a faucet elsewhere. */
 const FUNDING_WEI = 100n * 10n ** 18n;
 
-const skip = describeSkipReason();
-if (skip) {
-  // Printed rather than silent: a suite that vanishes without saying why
-  // is one nobody notices has stopped running.
-  console.warn(`[chain] skipping chain configuration suite — ${skip}`);
-}
+announceChainSkip("chain configuration suite");
 
 describe.skipIf(!chainAvailable())("chain-facing configuration guards", () => {
   let chain: LocalChain;

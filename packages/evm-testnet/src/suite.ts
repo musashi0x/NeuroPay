@@ -45,3 +45,32 @@ export function describeSkipReason(): string | null {
 export function chainAvailable(): boolean {
   return describeSkipReason() === null;
 }
+
+/**
+ * Announce that a chain suite cannot run — or refuse to let it pass.
+ *
+ * Skipping is right on a developer machine that never opted in. It is
+ * dangerous everywhere else, because a skipped suite and a passing one
+ * are reported identically: `pnpm test:chain` prints "7 successful"
+ * while running zero of the seventeen tests, and the only trace is a
+ * warning scrolling past. That is how coverage quietly stops existing.
+ *
+ * So CI sets `EVM_TESTNET_REQUIRE=1` and a missing prerequisite becomes
+ * a hard failure naming exactly what is absent. Call this once at the
+ * top of a chain suite.
+ */
+export function announceChainSkip(suiteName: string): void {
+  const reason = describeSkipReason();
+  if (reason === null) return;
+
+  const message = `[chain] ${suiteName} cannot run — ${reason}`;
+  if (process.env.EVM_TESTNET_REQUIRE === "1") {
+    throw new Error(
+      `${message}\n\nEVM_TESTNET_REQUIRE=1 is set, so this is a failure rather ` +
+        `than a skip. Unset it to allow skipping locally.`,
+    );
+  }
+  // Printed rather than silent: a suite that vanishes without saying why
+  // is one nobody notices has stopped running.
+  console.warn(`${message} (skipping)`);
+}
