@@ -19,7 +19,12 @@ import {
   type Settler,
 } from "./settle.js";
 import { IS_VALID_SIGNATURE_MAGIC, type Verifier } from "./verify.js";
-import { createSeller, SellerUnavailableError, type Seller } from "./index.js";
+import {
+  createSeller,
+  SellerUnavailableError,
+  StreamCapacityError,
+  type Seller,
+} from "./index.js";
 import { Buffer } from "node:buffer";
 
 const TOKEN: Address = "0x55d398326f99059f775a46c830bb1ec1b4f2e75d";
@@ -113,6 +118,7 @@ function buildSeller(opts: {
   verifier?: Verifier;
   meteringConfig?: MeteringConfig;
   settler?: Settler;
+  maxConcurrentStreams?: number;
 }): { seller: Seller; store: LedgerStore } {
   const store = freshLedger();
   const verifier: Verifier =
@@ -129,6 +135,9 @@ function buildSeller(opts: {
       settlerAddress: SETTLER,
       maxSecondsPerSegment: 10,
       maxUnitsPerSegment: 10,
+      ...(opts.maxConcurrentStreams !== undefined
+        ? { maxConcurrentStreams: opts.maxConcurrentStreams }
+        : {}),
     },
     store,
     verifier,
@@ -429,6 +438,43 @@ describe("seller composition root", () => {
       requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
     });
     expect(next.kind).toBe("unavailable");
+  });
+
+  it("refuses to open past the concurrent-stream ceiling", async () => {
+    const { seller } = buildSeller({ maxConcurrentStreams: 2 });
+    seller.openStream({ requestUrl: "https://api.example/v1/streams" });
+    seller.openStream({ requestUrl: "https://api.example/v1/streams" });
+
+    expect(() =>
+      seller.openStream({ requestUrl: "https://api.example/v1/streams" }),
+    ).toThrow(StreamCapacityError);
+  });
+
+  it("frees a slot when a stream ends", async () => {
+    // The ceiling counts live streams, not records. An ended stream is
+    // still in the store for replay lookups and must not hold a slot it
+    // has stopped using.
+    const { seller } = buildSeller({ maxConcurrentStreams: 1 });
+    const first = seller.openStream({
+      requestUrl: "https://api.example/v1/streams",
+    });
+    expect(() =>
+      seller.openStream({ requestUrl: "https://api.example/v1/streams" }),
+    ).toThrow(StreamCapacityError);
+
+    seller.endAll("session-revoked");
+    void first;
+    expect(() =>
+      seller.openStream({ requestUrl: "https://api.example/v1/streams" }),
+    ).not.toThrow();
+  });
+
+  it("is unbounded when no ceiling is configured", async () => {
+    const { seller } = buildSeller({});
+    for (let i = 0; i < 25; i += 1) {
+      seller.openStream({ requestUrl: "https://api.example/v1/streams" });
+    }
+    expect(seller.inspectStreams()).toHaveLength(25);
   });
 
   it("sweepAbandoned records stream.abandoned for expired streams", async () => {

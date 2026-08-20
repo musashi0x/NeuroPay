@@ -105,6 +105,17 @@ export type SellerConfig = {
   settlerAddress: Address;
   /** Stream-level ceiling beyond which streams end. */
   streamTtlSeconds?: number;
+  /**
+   * Most streams that may be open at once, across all callers.
+   *
+   * The idle sweep already reclaims abandoned streams, but it runs on an
+   * interval, and a caller that opens faster than the sweep collects
+   * outruns it. This is the standing ceiling that does not depend on how
+   * fast anything is: past it, opening fails until something ends.
+   * Unset means unbounded, which is only appropriate for a local dev
+   * process.
+   */
+  maxConcurrentStreams?: number;
   maxSecondsPerSegment?: number;
   maxUnitsPerSegment?: number;
 };
@@ -139,6 +150,29 @@ export class SellerUnavailableError extends Error {
   constructor(message: string = "seller is shutting down") {
     super(message);
     this.name = "SellerUnavailableError";
+  }
+}
+
+/**
+ * Thrown when the seller already holds its maximum number of live
+ * streams.
+ *
+ * Distinct from `SellerUnavailableError` (which means "shutting down",
+ * a state that resolves by restarting elsewhere): this one resolves on
+ * its own as streams end, so the route answers 503 with `Retry-After`
+ * rather than telling the caller the service is going away.
+ */
+export class StreamCapacityError extends Error {
+  readonly live: number;
+  readonly ceiling: number;
+  constructor(live: number, ceiling: number) {
+    super(
+      `seller is at its stream ceiling (${live}/${ceiling} live). ` +
+        `Retry once an open stream ends or is swept as abandoned.`,
+    );
+    this.name = "StreamCapacityError";
+    this.live = live;
+    this.ceiling = ceiling;
   }
 }
 
@@ -550,6 +584,16 @@ export function createSeller(input: CreateSellerInput): Seller {
   const seller: Seller = {
     openStream({ requestUrl, clock: callerClock }) {
       if (!accepting) throw new SellerUnavailableError();
+      const ceiling = input.config.maxConcurrentStreams;
+      if (ceiling !== undefined) {
+        // Count only live streams: an ended or abandoned record still
+        // sits in the store for replay lookups and must not consume a
+        // slot it is no longer using.
+        const live = streams.list().filter((r) => r.endReason === null).length;
+        if (live >= ceiling) {
+          throw new StreamCapacityError(live, ceiling);
+        }
+      }
       const useClock = callerClock ?? clock;
       const openOptions = {
         priceSheet: priceRegistry.current,

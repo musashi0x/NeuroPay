@@ -64,6 +64,7 @@ import {
   type ConsoleService,
 } from "./console/service.js";
 import { logger } from "./logger.js";
+import { CONSOLE_TOKEN_ENV, resolveConsoleAuth } from "./auth.js";
 
 export type PaymentRuntime = {
   console: ConsoleService;
@@ -86,6 +87,20 @@ export function tryCreateRuntime(
       return null;
     }
     throw err;
+  }
+
+  // Surface the console's auth posture at boot. An open kill switch is
+  // the kind of thing an operator should learn from the startup log, not
+  // from an incident.
+  const consoleAuthMode = resolveConsoleAuth(env);
+  if (consoleAuthMode.kind === "disabled") {
+    logger.warn(
+      { reason: consoleAuthMode.reason },
+      `${CONSOLE_TOKEN_ENV} is not set — the operator console is UNAUTHENTICATED. ` +
+        "Anyone who can reach this port can read session policy and payment " +
+        "history, and can revoke the session. Acceptable on a local dev box; " +
+        "never in a deployment. Generate one with `openssl rand -hex 32`.",
+    );
   }
 
   const priceSheet = readInitialPriceSheet(env);
@@ -112,6 +127,14 @@ export function tryCreateRuntime(
       token: config.chain.token,
       tokenDecimals: config.chain.tokenDecimals,
       settlerAddress,
+      ...(readOptionalPositiveInt(env, "MAX_CONCURRENT_STREAMS") !== undefined
+        ? {
+            maxConcurrentStreams: readOptionalPositiveInt(
+              env,
+              "MAX_CONCURRENT_STREAMS",
+            )!,
+          }
+        : {}),
     },
     store: watchLedger(ledger, () => hub.notify()),
     verifier,
@@ -404,6 +427,28 @@ function readInitialPriceSheet(env: NodeJS.ProcessEnv): {
     perUnit: readSmallestUnits(env, "PRICE_PER_UNIT"),
     unitName: env.PRICE_UNIT_NAME ?? "unit",
   };
+}
+
+/**
+ * Read an optional positive integer from the environment.
+ *
+ * Undefined means "no ceiling", which is a legitimate local-dev choice.
+ * A present but malformed value is fatal rather than ignored: an
+ * operator who set a limit and got none because of a typo is worse off
+ * than one whose process refused to start.
+ */
+function readOptionalPositiveInt(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): number | undefined {
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^\d+$/.test(raw) || Number(raw) === 0) {
+    throw new TypeError(
+      `${name} must be a positive integer (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return Number(raw);
 }
 
 function readSmallestUnits(env: NodeJS.ProcessEnv, name: string): bigint {

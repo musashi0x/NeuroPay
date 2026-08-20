@@ -13,6 +13,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { toJsonSafe } from "../json.js";
+import { getLog } from "../middleware.js";
 import { ConsoleNotFoundError, type ConsoleService } from "./service.js";
 
 export type ConsoleRouteDeps = {
@@ -49,6 +50,14 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   app.post("/v1/session/revoke", async (c) => {
+    // Revocation is the kill switch. The ledger already records the
+    // outcome as `session.revoked`; this line records the *request* —
+    // when it arrived and under which request id — so an operator can
+    // tie a revoked session back to the call that ended it.
+    getLog(c).warn(
+      { action: "revoke", path: c.req.path },
+      "operator invoked session revocation",
+    );
     try {
       const result = await deps.console.revoke();
       return c.json(toJsonSafe(result), 200);
@@ -61,6 +70,14 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   app.post("/v1/session/revoke/retry", async (c) => {
+    // Revocation is the kill switch. The ledger already records the
+    // outcome as `session.revoked`; this line records the *request* —
+    // when it arrived and under which request id — so an operator can
+    // tie a revoked session back to the call that ended it.
+    getLog(c).warn(
+      { action: "revoke-retry", path: c.req.path },
+      "operator invoked session revocation",
+    );
     try {
       const result = await deps.console.retryRevoke();
       return c.json(toJsonSafe(result), 200);

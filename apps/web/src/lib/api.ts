@@ -11,8 +11,22 @@ import { reviveWire } from "./wire";
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
+/**
+ * Console requests go through the same-origin proxy, not straight to the
+ * API.
+ *
+ * The console is a client component, so anything it sends is sent by the
+ * browser. The API's console routes require an operator bearer token,
+ * and a token the browser can send is a token in the bundle. The proxy
+ * at `/api/console/*` holds it server-side instead. See that route for
+ * the full reasoning.
+ */
+export const CONSOLE_BASE = "/api/console";
+
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+  const response = await fetch(`${CONSOLE_BASE}${path}`, {
+    cache: "no-store",
+  });
   if (!response.ok) {
     throw new Error(`${path} failed with ${response.status}`);
   }
@@ -48,7 +62,7 @@ export async function fetchSnapshot(): Promise<ConsoleSnapshot> {
 }
 
 export async function revokeSession(): Promise<RevokeResult> {
-  const response = await fetch(`${API_URL}/v1/session/revoke`, {
+  const response = await fetch(`${CONSOLE_BASE}/v1/session/revoke`, {
     method: "POST",
   });
   if (!response.ok) {
@@ -60,7 +74,9 @@ export async function revokeSession(): Promise<RevokeResult> {
 export function openConsoleEvents(
   onSnapshot: (snapshot: ConsoleSnapshot) => void,
 ): () => void {
-  const source = new EventSource(`${API_URL}/v1/events`);
+  // EventSource cannot set headers, so it cannot carry the operator
+  // token. Same-origin proxy again.
+  const source = new EventSource(`${CONSOLE_BASE}/v1/events`);
   const handle = (event: MessageEvent<string>) => {
     try {
       onSnapshot(reviveWire(JSON.parse(event.data)) as ConsoleSnapshot);
