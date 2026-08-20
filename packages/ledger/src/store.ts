@@ -35,6 +35,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import type {
+  AuditEvent,
   LedgerEntry,
   LedgerEventType,
   PaymentFailureClassification,
@@ -61,6 +62,20 @@ import {
   type SettlementIntentRow,
   type SettlementIntentStatus,
 } from "./outbox.js";
+import {
+  decodeAuditRow,
+  validateAuditInput,
+  type AuditAppendInput,
+  type AuditQuery,
+  type AuditRow,
+} from "./audit.js";
+import {
+  LATEST_SCHEMA_VERSION,
+  migrate,
+  readAppliedMigrations,
+  readUserVersion,
+  type MigrationReport,
+} from "./migrations.js";
 
 /**
  * Wire columns of a ledger row on disk. Kept in one place so every SQL
@@ -121,79 +136,13 @@ export type LedgerStoreOptions = {
    * deterministic generator to make snapshots reproducible.
    */
   randomId?: () => string;
+  /**
+   * Called once after migrations run, with what was applied. The store
+   * has no logger of its own — this is how `apps/api` reports a schema
+   * upgrade at boot instead of performing one silently.
+   */
+  onMigrate?: (report: MigrationReport) => void;
 };
-
-/**
- * Schema applied when the store is opened. Idempotent: every statement is
- * `IF NOT EXISTS`, so a populated database opens without rewriting history.
- *
- * `seq` is a separate column from `id` so `ORDER BY seq` is the canonical
- * replay order independent of insertion timing — `id` is a UUID and UUIDs
- * do not sort by creation time.
- */
-const SCHEMA_STATEMENTS = [
-  `CREATE TABLE IF NOT EXISTS ledger_entries (
-    id TEXT PRIMARY KEY,
-    seq INTEGER NOT NULL,
-    timestamp TEXT NOT NULL,
-    event TEXT NOT NULL,
-    stream_id TEXT,
-    session_public_key TEXT,
-    chain_id INTEGER NOT NULL,
-    token TEXT NOT NULL,
-    token_decimals INTEGER NOT NULL,
-    amount TEXT,
-    nonce TEXT,
-    transaction_hash TEXT,
-    classification TEXT,
-    corrects_entry_id TEXT,
-    detail TEXT
-  )`,
-  `CREATE INDEX IF NOT EXISTS ledger_entries_seq_idx ON ledger_entries(seq)`,
-  `CREATE INDEX IF NOT EXISTS ledger_entries_nonce_idx ON ledger_entries(nonce)
-     WHERE nonce IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS ledger_entries_stream_idx ON ledger_entries(stream_id)
-     WHERE stream_id IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS ledger_entries_session_idx ON ledger_entries(session_public_key)
-     WHERE session_public_key IS NOT NULL`,
-  `CREATE TABLE IF NOT EXISTS delivery_records (
-    nonce TEXT PRIMARY KEY,
-    stream_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    data TEXT NOT NULL,
-    seconds_delivered INTEGER NOT NULL,
-    units_delivered INTEGER NOT NULL,
-    accrued_unpaid TEXT NOT NULL,
-    total_accrued TEXT NOT NULL,
-    stream_ended INTEGER NOT NULL,
-    end_reason TEXT,
-    recorded_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS settlement_intents (
-    nonce TEXT PRIMARY KEY,
-    stream_id TEXT NOT NULL,
-    session_public_key TEXT,
-    chain_id INTEGER NOT NULL,
-    token TEXT NOT NULL,
-    token_decimals INTEGER NOT NULL,
-    amount TEXT NOT NULL,
-    payer TEXT NOT NULL,
-    pay_to TEXT NOT NULL,
-    deadline INTEGER,
-    signature TEXT,
-    spender TEXT,
-    witness_to TEXT,
-    witness_valid_after TEXT,
-    status TEXT NOT NULL,
-    transaction_hash TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS settlement_intents_status_idx
-     ON settlement_intents(status)`,
-];
 
 /**
  * Backwards scan that finds the highest stored `seq` for a mem-style
@@ -247,53 +196,6 @@ const INSERT_INTENT = `INSERT OR IGNORE INTO settlement_intents (
   last_error, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-/**
- * Additive column migrations for files created before a column existed.
- *
- * `CREATE TABLE IF NOT EXISTS` silently leaves an older table alone, so a
- * ledger written by a previous version keeps its old column set and every
- * insert against the new statement fails. Each entry here is applied only
- * when `PRAGMA table_info` says the column is missing, which makes the
- * whole set idempotent and safe to run on every open.
- *
- * Additive only: no drops, no renames, no type changes. Anything beyond
- * that needs the real versioned-migration machinery.
- */
-const COLUMN_MIGRATIONS: { table: string; column: string; ddl: string }[] = [
-  {
-    table: "settlement_intents",
-    column: "signature",
-    ddl: "ALTER TABLE settlement_intents ADD COLUMN signature TEXT",
-  },
-  {
-    table: "settlement_intents",
-    column: "spender",
-    ddl: "ALTER TABLE settlement_intents ADD COLUMN spender TEXT",
-  },
-  {
-    table: "settlement_intents",
-    column: "witness_to",
-    ddl: "ALTER TABLE settlement_intents ADD COLUMN witness_to TEXT",
-  },
-  {
-    table: "settlement_intents",
-    column: "witness_valid_after",
-    ddl: "ALTER TABLE settlement_intents ADD COLUMN witness_valid_after TEXT",
-  },
-];
-
-/** Apply every column migration whose column is not already present. */
-function applyColumnMigrations(db: DatabaseSync): void {
-  for (const migration of COLUMN_MIGRATIONS) {
-    const columns = db
-      .prepare(`PRAGMA table_info(${migration.table})`)
-      .all() as { name: string }[];
-    if (columns.length === 0) continue;
-    if (columns.some((c) => c.name === migration.column)) continue;
-    db.exec(migration.ddl);
-  }
-}
-
 const SELECT_INTENT = `SELECT * FROM settlement_intents WHERE nonce = ?`;
 
 const SELECT_INTENTS = `SELECT * FROM settlement_intents ORDER BY created_at ASC`;
@@ -305,11 +207,24 @@ const UPDATE_INTENT = `UPDATE settlement_intents
   SET status = ?, transaction_hash = ?, attempts = ?, last_error = ?, updated_at = ?
   WHERE nonce = ?`;
 
+const SELECT_MAX_AUDIT_SEQ = `SELECT COALESCE(MAX(seq), 0) AS max_seq FROM audit_events`;
+
+const INSERT_AUDIT = `INSERT INTO audit_events (
+  id, seq, timestamp, action, actor, subject, outcome, request_id, detail
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+const SELECT_AUDIT_ORDERED = `SELECT * FROM audit_events ORDER BY seq ASC`;
+
+const SELECT_AUDIT_BY_ACTION = `SELECT * FROM audit_events
+  WHERE action = ? ORDER BY seq ASC`;
+
 /**
- * Create a ledger store and run the schema.
+ * Create a ledger store and bring its schema up to date.
  *
- * The schema statement set is idempotent; calling `open` against a
- * populated file does not touch existing rows.
+ * Migrations run on every open and are idempotent, so opening a current
+ * file writes nothing. Opening a file written by a *newer* build throws
+ * `LedgerSchemaVersionError` rather than proceeding — see
+ * `./migrations.js` for why that is fatal.
  */
 export function openLedgerStore(options: LedgerStoreOptions): LedgerStore {
   const storagePath = options.storagePath;
@@ -331,10 +246,8 @@ export function openLedgerStore(options: LedgerStoreOptions): LedgerStore {
     db.exec("PRAGMA synchronous = NORMAL");
   }
 
-  for (const statement of SCHEMA_STATEMENTS) {
-    db.exec(statement);
-  }
-  applyColumnMigrations(db);
+  const report = migrate(db, options.clock ?? defaultClock);
+  options.onMigrate?.(report);
 
   return new LedgerStoreImpl(
     db,
@@ -405,10 +318,32 @@ export interface LedgerStore {
     nonce: string,
     patch: SettlementIntentPatch,
   ): Promise<SettlementIntent | null>;
+
+  /**
+   * Append an administrative audit record. Same append-only and
+   * no-key-material guarantees as `append`, different table — see
+   * `./audit.js` for why the two are not one.
+   */
+  appendAudit(input: AuditAppendInput): Promise<AuditEvent>;
+
+  /** Audit records in write order, optionally narrowed. */
+  auditEvents(query?: AuditQuery): Promise<AuditEvent[]>;
+
+  /**
+   * The schema version of the open file and the migrations recorded
+   * against it. Read by the readiness probe so an operator can see what
+   * the process is actually talking to.
+   */
+  schemaInfo(): {
+    version: number;
+    latest: number;
+    applied: { version: number; name: string; appliedAt: string }[];
+  };
 }
 
 class LedgerStoreImpl implements LedgerStore {
   private maxCachedSeq: number | null = null;
+  private maxCachedAuditSeq: number | null = null;
   private closed = false;
 
   constructor(
@@ -643,6 +578,76 @@ class LedgerStoreImpl implements LedgerStore {
     return next;
   }
 
+  async appendAudit(input: AuditAppendInput): Promise<AuditEvent> {
+    this.assertOpen();
+    validateAuditInput(input);
+    assertNoKeyMaterial({
+      action: input.action,
+      actor: input.actor,
+      subject: input.subject ?? null,
+      detail: input.detail ?? null,
+      requestId: input.requestId ?? null,
+    });
+
+    const row: AuditRow = {
+      id: this.randomId(),
+      seq: this.nextAuditSequence(),
+      timestamp: input.timestamp ?? this.clock(),
+      action: input.action,
+      actor: input.actor,
+      subject: input.subject ?? null,
+      outcome: input.outcome,
+      request_id: input.requestId ?? null,
+      detail: input.detail ?? null,
+    };
+
+    this.db
+      .prepare(INSERT_AUDIT)
+      .run(
+        row.id,
+        row.seq,
+        row.timestamp,
+        row.action,
+        row.actor,
+        row.subject,
+        row.outcome,
+        row.request_id,
+        row.detail,
+      );
+
+    return decodeAuditRow(row);
+  }
+
+  async auditEvents(query: AuditQuery = {}): Promise<AuditEvent[]> {
+    this.assertOpen();
+    const rows = (
+      query.action === undefined
+        ? this.db.prepare(SELECT_AUDIT_ORDERED).all()
+        : this.db.prepare(SELECT_AUDIT_BY_ACTION).all(query.action)
+    ) as AuditRow[];
+    const decoded = rows.map(decodeAuditRow);
+    // `limit` means "the most recent N", but the return order stays
+    // oldest-first so a caller can read a slice the same way it reads
+    // the whole trail.
+    if (query.limit === undefined || decoded.length <= query.limit) {
+      return decoded;
+    }
+    return decoded.slice(decoded.length - query.limit);
+  }
+
+  schemaInfo(): {
+    version: number;
+    latest: number;
+    applied: { version: number; name: string; appliedAt: string }[];
+  } {
+    this.assertOpen();
+    return {
+      version: readUserVersion(this.db),
+      latest: LATEST_SCHEMA_VERSION,
+      applied: readAppliedMigrations(this.db),
+    };
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -665,6 +670,22 @@ class LedgerStoreImpl implements LedgerStore {
     }
     this.maxCachedSeq += 1;
     return this.maxCachedSeq;
+  }
+
+  /**
+   * Next `seq` for the audit table. Tracked separately from the payment
+   * ledger's: the two tables are ordered independently, and sharing one
+   * counter would make audit sequence numbers jump by however many
+   * payments happened in between, which reads as gaps in the trail.
+   */
+  private nextAuditSequence(): number {
+    if (this.maxCachedAuditSeq === null) {
+      const row = this.db.prepare(SELECT_MAX_AUDIT_SEQ).get() as
+        { max_seq: number } | undefined;
+      this.maxCachedAuditSeq = row?.max_seq ?? 0;
+    }
+    this.maxCachedAuditSeq += 1;
+    return this.maxCachedAuditSeq;
   }
 
   private assertOpen(): void {

@@ -377,3 +377,113 @@ describe("console API", () => {
     );
   });
 });
+
+describe("administrative audit trail", () => {
+  it("records a revoke request with its actor and request id", async () => {
+    const { app, ledger } = harness();
+    const response = await app.request("/v1/session/revoke", {
+      method: "POST",
+      headers: { "X-Request-Id": "req-audit-1" },
+    });
+    expect(response.status).toBe(200);
+
+    const events = await ledger.auditEvents({
+      action: "session.revoke.requested",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actor: "operator",
+      outcome: "succeeded",
+      subject: WALLET,
+      requestId: "req-audit-1",
+    });
+    ledger.close();
+  });
+
+  it("records a revoke that found no session as a failed request", async () => {
+    // The attempt is the fact worth keeping: "someone tried to kill a
+    // session that was already gone" is exactly what an incident
+    // reconstruction needs, and it leaves no ledger entry of its own.
+    const { app, ledger, sessions } = harness();
+    sessions.remove(WALLET);
+
+    const response = await app.request("/v1/session/revoke", {
+      method: "POST",
+    });
+    expect(response.status).toBe(404);
+
+    const events = await ledger.auditEvents({
+      action: "session.revoke.requested",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.outcome).toBe("failed");
+    ledger.close();
+  });
+
+  it("records an on-chain revoke retry", async () => {
+    const { app, ledger } = harness({
+      performRevoke: async () => ({
+        local: { revoked: true },
+        onChain: { revoked: false, status: "FAILED", transactionHash: null },
+      }),
+      performRetryRevoke: async () => ({
+        local: { revoked: true },
+        onChain: {
+          revoked: true,
+          status: "CONFIRMED",
+          transactionHash: ("0x" + "33".repeat(32)) as Hex,
+        },
+      }),
+    });
+
+    await app.request("/v1/session/revoke", { method: "POST" });
+    const retry = await app.request("/v1/session/revoke/retry", {
+      method: "POST",
+    });
+    expect(retry.status).toBe(200);
+
+    const events = await ledger.auditEvents({
+      action: "session.revoke.retry.requested",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.outcome).toBe("succeeded");
+    ledger.close();
+  });
+
+  it("records a price change and what it ended", async () => {
+    const { seller, ledger } = harness();
+    seller.openStream({ requestUrl: "https://seller.example/v1/streams" });
+    seller.updatePrices({
+      perCall: 200n,
+      perSecond: 20n,
+      perUnit: 2n,
+      unitName: "token",
+    });
+
+    const events = await ledger.auditEvents({ action: "prices.updated" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.detail).toContain("perCall=200");
+    expect(events[0]?.detail).toContain("endedStreams=1");
+    ledger.close();
+  });
+
+  it("records a settlement retry that failed, and answers 409", async () => {
+    const { app, ledger } = harness();
+    const response = await app.request("/v1/settlements/no-such-nonce/retry", {
+      method: "POST",
+    });
+    // The nonce is unknown to the queue, which is the operator's answer
+    // rather than a server fault.
+    expect(response.status).toBe(409);
+
+    const events = await ledger.auditEvents({
+      action: "settlement.retry.requested",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      outcome: "failed",
+      subject: "no-such-nonce",
+    });
+    ledger.close();
+  });
+});

@@ -40,6 +40,7 @@ export type {
   LedgerEventType,
   PaymentFailureClassification,
 } from "./ledger.js";
+export type { AuditAction, AuditEvent, AuditOutcome } from "./audit.js";
 export type {
   RevokeResult,
   SessionCallPermission,

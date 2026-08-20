@@ -5,7 +5,13 @@ import { tryCreateRuntime } from "./runtime.js";
 
 const runtime = tryCreateRuntime();
 const app = createApp({
-  ...(runtime ? { console: runtime.console, seller: runtime.seller } : {}),
+  ...(runtime
+    ? {
+        console: runtime.console,
+        seller: runtime.seller,
+        ops: { ops: runtime.ops, ledger: runtime.ledger },
+      }
+    : {}),
 });
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);

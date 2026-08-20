@@ -60,6 +60,10 @@ function consoleStub() {
           onChain: { revoked: true, status: null, transactionHash: null },
         };
       },
+      retrySettlement: async () => {
+        calls.push("retrySettlement");
+        return { transactionHash: `0x${"11".repeat(32)}` as const };
+      },
       subscribe: () => () => {},
       notify: () => {},
       close: () => {},
@@ -148,6 +152,7 @@ describe("console routes are guarded", () => {
     ["GET", "/v1/budget"],
     ["POST", "/v1/session/revoke"],
     ["POST", "/v1/session/revoke/retry"],
+    ["POST", "/v1/settlements/abc/retry"],
   ] as const;
 
   for (const [method, path] of paths) {

@@ -25,6 +25,20 @@
  */
 
 export type { AppendInput, LedgerStore, LedgerStoreOptions } from "./store.js";
+export type { AuditAppendInput, AuditQuery } from "./audit.js";
+export {
+  LATEST_SCHEMA_VERSION,
+  LedgerSchemaVersionError,
+  MIGRATIONS,
+  migrate,
+  readAppliedMigrations,
+  readUserVersion,
+} from "./migrations.js";
+export type {
+  AppliedMigration,
+  Migration,
+  MigrationReport,
+} from "./migrations.js";
 export type { DeliveryRecord } from "./delivery.js";
 export type {
   SettlementIntent,
@@ -115,3 +129,15 @@ export {
   totalUnrecoveredExposure,
 } from "./exposure.js";
 export type { UnsettledExposure } from "./exposure.js";
+
+export {
+  computeLedgerMetrics,
+  foldLedgerMetrics,
+  EMPTY_LEDGER_METRICS,
+} from "./metrics.js";
+export type {
+  LatencySummary,
+  LedgerMetrics,
+  SettlementMetrics,
+  VerificationMetrics,
+} from "./metrics.js";

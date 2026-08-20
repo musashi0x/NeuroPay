@@ -17,8 +17,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { openLedgerStore } from "@neuro-pay/ledger";
 import { createApp } from "./app.js";
 import { MIN_TOKEN_LENGTH } from "./auth.js";
+import { createOpsService } from "./ops/service.js";
+import { ledgerProbe, skippedProbe } from "./ops/probes.js";
 
 /**
  * Sentinels. Distinctive enough that a match cannot be coincidence, and
@@ -49,6 +52,9 @@ function consoleStub() {
     },
     retryRevoke: async () => {
       throw new Error("no pending revoke");
+    },
+    retrySettlement: async () => {
+      throw new Error("no such settlement intent");
     },
     subscribe: () => () => {},
     notify: () => {},
@@ -111,6 +117,12 @@ describe("no endpoint echoes key material", () => {
     ["GET", "/v1/streams/s-1/next"],
     ["POST", "/v1/session/revoke"],
     ["POST", "/v1/session/revoke/retry"],
+    ["POST", "/v1/settlements/abc/retry"],
+    ["GET", "/ready"],
+    ["GET", "/v1/health"],
+    ["GET", "/metrics"],
+    ["GET", "/v1/metrics"],
+    ["GET", "/v1/audit"],
     ["GET", "/does-not-exist"],
   ] as const;
 
@@ -123,10 +135,22 @@ describe("no endpoint echoes key material", () => {
         SESSION_PRIVATE_KEY: SECRETS.session,
         CONSOLE_API_TOKEN: SECRETS.consoleToken,
       });
+      // The ops surface is wired for real rather than stubbed: it is the
+      // newest place config is serialized, and a stub would sweep the
+      // route rather than the rendering.
+      const ledger = openLedgerStore({ storagePath: ":memory:" });
+      const ops = createOpsService({
+        ledger,
+        probes: [skippedProbe("rpc", "not configured"), ledgerProbe(ledger)],
+        exposureStats: () => ({ inFlight: 0, ceiling: 4 }),
+        getBudget: async () => null,
+        getSession: async () => null,
+      });
       try {
         const app = createApp({
           console: consoleStub() as never,
           seller: sellerStub() as never,
+          ops: { ops, ledger },
           consoleAuth: { kind: "enforced", token: SECRETS.consoleToken },
         });
         // Authenticated, so the handlers actually run rather than
@@ -141,6 +165,7 @@ describe("no endpoint echoes key material", () => {
           `${method} ${path} headers`,
         );
       } finally {
+        ledger.close();
         for (const key of Object.keys(process.env)) {
           if (!(key in previous)) delete process.env[key];
         }

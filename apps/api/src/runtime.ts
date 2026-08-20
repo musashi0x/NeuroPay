@@ -38,6 +38,22 @@ import {
   type RevokeSessionResult,
 } from "@neuro-pay/altana";
 import { openLedgerStore, type LedgerStore } from "@neuro-pay/ledger";
+import { createOpsService, type OpsService } from "./ops/service.js";
+import {
+  DEFAULT_ALERT_THRESHOLDS,
+  type AlertThresholds,
+  type Probe,
+} from "./ops/health.js";
+import {
+  ledgerProbe,
+  permit2Probe,
+  rpcProbe,
+  sessionAuthorityProbe,
+  settlerBalanceProbe,
+  skippedProbe,
+  tokenDecimalsProbe,
+  type ProbeClient,
+} from "./ops/probes.js";
 import {
   createPublicClient,
   createWalletClient,
@@ -69,6 +85,8 @@ import { CONSOLE_TOKEN_ENV, resolveConsoleAuth } from "./auth.js";
 export type PaymentRuntime = {
   console: ConsoleService;
   seller: Seller;
+  ops: OpsService;
+  ledger: LedgerStore;
   close: () => Promise<void>;
 };
 
@@ -104,6 +122,7 @@ export function tryCreateRuntime(
   }
 
   const priceSheet = readInitialPriceSheet(env);
+  const alertThresholds = readAlertThresholds(env);
 
   const sessionPath = env.SESSION_STORE_PATH ?? ".data/session.json";
   const ledgerPath = env.LEDGER_PATH ?? ".data/ledger.sqlite";
@@ -111,11 +130,31 @@ export function tryCreateRuntime(
   mkdirSync(dirname(ledgerPath), { recursive: true });
 
   const sessions = new SessionStore({ fileStorePath: sessionPath });
-  const ledger = openLedgerStore({ storagePath: ledgerPath });
+  const ledger = openLedgerStore({
+    storagePath: ledgerPath,
+    // A schema upgrade rewrites a durable file. It happens automatically
+    // because refusing to start on a stale file would be worse, but it
+    // is never silent.
+    onMigrate: (report) => {
+      if (report.applied.length === 0) return;
+      logger.info(
+        {
+          from: report.from,
+          to: report.to,
+          applied: report.applied.map((a) => `${a.version}:${a.name}`),
+        },
+        "ledger schema migrated",
+      );
+    },
+  });
   const hub: { notify: () => void } = { notify() {} };
 
   const verifier = createRuntimeVerifier(config);
-  const { settler, settlerAddress } = createRuntimeSettler(config, ledger, env);
+  const {
+    settler,
+    settlerAddress,
+    chainBacked: settlerOnChain,
+  } = createRuntimeSettler(config, ledger, env);
   const sessionAuthority = createRuntimeSessionAuthority(config, sessions);
 
   const seller = createSeller({
@@ -158,6 +197,74 @@ export function tryCreateRuntime(
   });
   hub.notify = () => consoleService.notify();
 
+  const probeClient = createProbeClient(config);
+  const ops = createOpsService({
+    ledger,
+    probes: buildProbes({
+      config,
+      ledger,
+      probeClient,
+      settlerAddress,
+      settlerOnChain,
+      thresholds: alertThresholds,
+      readSessionStatus: async () => {
+        const [wallet] = sessions.list();
+        if (!wallet) return null;
+        const persisted = sessions.read(wallet);
+        if (!persisted) return null;
+        return sessionAuthority.resolveStatus
+          ? await sessionAuthority.resolveStatus(persisted)
+          : null;
+      },
+    }),
+    exposureStats: () => {
+      const stats = seller.exposureStats();
+      return { inFlight: stats.inFlight, ceiling: stats.ceiling };
+    },
+    getBudget: () => consoleService.getBudget(),
+    getSession: () => consoleService.getSession(),
+    ...(settlerOnChain && probeClient
+      ? {
+          settler: {
+            address: settlerAddress,
+            readBalanceWei: () =>
+              probeClient.getBalance({ address: settlerAddress }),
+          },
+        }
+      : {}),
+    thresholds: alertThresholds,
+  });
+
+  // The audit trail's first record. A process that started is the
+  // context every later administrative action is read against — without
+  // it, a revoke at 03:00 gives no way to tell whether the process had
+  // been up for a week or had just restarted into a bad config.
+  void ledger
+    .appendAudit({
+      action: "config.loaded",
+      actor: "system",
+      outcome: "succeeded",
+      subject: `chain:${config.chain.chainId}`,
+      detail: describeEffectiveConfig(config, {
+        settlerOnChain,
+        consoleAuthenticated: consoleAuthMode.kind !== "disabled",
+        verifierOnChain: Boolean(config.chain.rpcUrl),
+      }),
+    })
+    .then(() =>
+      ledger.appendAudit({
+        action: "process.started",
+        actor: "system",
+        outcome: "succeeded",
+      }),
+    )
+    .catch((err: unknown) => {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "failed to record process start in the audit trail",
+      );
+    });
+
   void seller.reconcileSettlements().catch((err: unknown) => {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
@@ -182,13 +289,181 @@ export function tryCreateRuntime(
   return {
     console: consoleService,
     seller,
+    ops,
+    ledger,
     close: async () => {
       clearInterval(sweepTimer);
       await seller.shutdown();
+      try {
+        await ledger.appendAudit({
+          action: "process.stopped",
+          actor: "system",
+          outcome: "succeeded",
+        });
+      } catch (err: unknown) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "failed to record process stop in the audit trail",
+        );
+      }
       consoleService.close();
       ledger.close();
     },
   };
+}
+
+/**
+ * A viem client used only by the readiness probes.
+ *
+ * Deliberately separate from the verifier's and the settler's clients:
+ * a probe must be able to report that the RPC is unreachable, and it
+ * cannot do that if constructing it is what failed. Returns null when
+ * no `RPC_URL` is configured, which the probe builder reads as "skip
+ * the chain probes" rather than "the chain is down".
+ */
+function createProbeClient(
+  config: ReturnType<typeof loadAppConfig>,
+): ProbeClient | null {
+  const rpcUrl = config.chain.rpcUrl;
+  if (!rpcUrl) return null;
+  try {
+    const client = createPublicClient({
+      chain: viemChainFor(config.chain.chainId),
+      transport: http(rpcUrl),
+    });
+    return client as unknown as ProbeClient;
+  } catch (err: unknown) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "readiness probe client could not be constructed; chain probes are skipped",
+    );
+    return null;
+  }
+}
+
+/**
+ * Assemble the probe set for this deployment.
+ *
+ * Every probe is always present in the report. A dependency that is not
+ * wired reports `skipped` with the reason rather than being omitted,
+ * because a missing line in a health report reads as "fine" and an
+ * unconfigured settler is not fine in production — it is just not an
+ * error the process can decide about on its own.
+ */
+function buildProbes(input: {
+  config: ReturnType<typeof loadAppConfig>;
+  ledger: LedgerStore;
+  probeClient: ProbeClient | null;
+  settlerAddress: Address;
+  settlerOnChain: boolean;
+  thresholds: AlertThresholds;
+  readSessionStatus: () => Promise<string | null>;
+}): Probe[] {
+  const { probeClient, config } = input;
+  const noRpc = "RPC_URL is not configured";
+
+  return [
+    probeClient
+      ? rpcProbe(probeClient, config.chain.chainId)
+      : skippedProbe("rpc", noRpc),
+    probeClient
+      ? tokenDecimalsProbe(
+          probeClient,
+          config.chain.token,
+          config.chain.tokenDecimals,
+        )
+      : skippedProbe("token-decimals", noRpc),
+    probeClient
+      ? permit2Probe(probeClient, PERMIT2_ADDRESS as Address)
+      : skippedProbe("permit2", noRpc),
+    probeClient && input.settlerOnChain
+      ? settlerBalanceProbe(
+          probeClient,
+          input.settlerAddress,
+          input.thresholds.settlerBalanceFloorWei,
+        )
+      : skippedProbe(
+          "settler-balance",
+          input.settlerOnChain
+            ? noRpc
+            : "SETTLER_PRIVATE_KEY is not configured; settlement is in-memory only",
+        ),
+    ledgerProbe(input.ledger),
+    sessionAuthorityProbe(input.readSessionStatus),
+  ];
+}
+
+/**
+ * Alert thresholds from the environment, falling back to the defaults.
+ *
+ * A malformed value is fatal rather than ignored, for the same reason a
+ * malformed `MAX_CONCURRENT_STREAMS` is: an operator who set a threshold
+ * and silently got the default is worse off than one whose process
+ * refused to start.
+ */
+function readAlertThresholds(env: NodeJS.ProcessEnv): AlertThresholds {
+  return {
+    failedSettlementWarn:
+      readOptionalPositiveInt(env, "ALERT_FAILED_SETTLEMENTS_WARN") ??
+      DEFAULT_ALERT_THRESHOLDS.failedSettlementWarn,
+    failedSettlementCritical:
+      readOptionalPositiveInt(env, "ALERT_FAILED_SETTLEMENTS_CRITICAL") ??
+      DEFAULT_ALERT_THRESHOLDS.failedSettlementCritical,
+    settlerBalanceFloorWei:
+      readOptionalBigint(env, "SETTLER_MIN_BALANCE_WEI") ??
+      DEFAULT_ALERT_THRESHOLDS.settlerBalanceFloorWei,
+    sessionExpiryWarnSeconds:
+      readOptionalPositiveInt(env, "ALERT_SESSION_EXPIRY_WARN_SECONDS") ??
+      DEFAULT_ALERT_THRESHOLDS.sessionExpiryWarnSeconds,
+  };
+}
+
+/**
+ * One line describing what the process actually wired, for the audit
+ * trail.
+ *
+ * Names no secret and no host — an audit record is exportable by
+ * definition, and "which RPC endpoint" is not worth putting in a file
+ * meant to be shared. What it does record is every choice that changes
+ * whether payments are real: stub verifier or chain, in-memory settler
+ * or chain, console open or authenticated.
+ */
+function describeEffectiveConfig(
+  config: ReturnType<typeof loadAppConfig>,
+  posture: {
+    settlerOnChain: boolean;
+    consoleAuthenticated: boolean;
+    verifierOnChain: boolean;
+  },
+): string {
+  return [
+    `chainId=${config.chain.chainId}`,
+    `token=${config.chain.token}`,
+    `tokenDecimals=${config.chain.tokenDecimals}`,
+    `payTo=${config.chain.payTo}`,
+    `settlementThreshold=${config.metering.settlementThreshold}`,
+    `tickIntervalSeconds=${config.metering.tickIntervalSeconds}`,
+    `maxInFlightSettlements=${config.metering.maxInFlightSettlements}`,
+    `budgetMargin=${config.metering.budgetMargin}`,
+    `verifier=${posture.verifierOnChain ? "chain" : "stub"}`,
+    `settler=${posture.settlerOnChain ? "chain" : "in-memory"}`,
+    `consoleAuth=${posture.consoleAuthenticated ? "on" : "off"}`,
+  ].join(" ");
+}
+
+/** Read an optional non-negative bigint (decimal digits) from the environment. */
+function readOptionalBigint(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): bigint | undefined {
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^\d+$/.test(raw)) {
+    throw new TypeError(
+      `${name} must be digits only (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return BigInt(raw);
 }
 
 function createRuntimeVerifier(
@@ -233,6 +508,12 @@ function createRuntimeSettler(
   settler: import("./seller/settle.js").Settler;
   /** The address published in the 402 as `extra.spenderAddress`. */
   settlerAddress: Address;
+  /**
+   * True only when a real EOA submits to a real chain. The readiness
+   * probes use this to tell "no settler configured" (skip the balance
+   * check) from "settler configured and broke".
+   */
+  chainBacked: boolean;
 } {
   const rpcUrl = config.chain.rpcUrl;
   const pk = env["SETTLER_PRIVATE_KEY"];
@@ -249,6 +530,7 @@ function createRuntimeSettler(
     return {
       settler: createInMemorySettler({ defaultBehavior: "confirm" }),
       settlerAddress: config.chain.payTo,
+      chainBacked: false,
     };
   }
 
@@ -280,6 +562,7 @@ function createRuntimeSettler(
       // against `msg.sender` of the settlement call, and this account is
       // what sends it.
       settlerAddress: account.address as Address,
+      chainBacked: true,
     };
   } catch (err: unknown) {
     logger.warn(
@@ -291,6 +574,7 @@ function createRuntimeSettler(
     return {
       settler: createInMemorySettler({ defaultBehavior: "confirm" }),
       settlerAddress: config.chain.payTo,
+      chainBacked: false,
     };
   }
 }
@@ -479,5 +763,10 @@ function watchLedger(store: LedgerStore, onAppend: () => void): LedgerStore {
     getIntent: (nonce) => store.getIntent(nonce),
     listIntents: (status) => store.listIntents(status),
     updateIntent: (nonce, patch) => store.updateIntent(nonce, patch),
+    // Audit and schema reads pass straight through: only payment
+    // appends drive the console's live snapshot.
+    appendAudit: (input) => store.appendAudit(input),
+    auditEvents: (query) => store.auditEvents(query),
+    schemaInfo: () => store.schemaInfo(),
   };
 }

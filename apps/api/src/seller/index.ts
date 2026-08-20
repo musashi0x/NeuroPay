@@ -937,8 +937,29 @@ export function createSeller(input: CreateSellerInput): Seller {
         ...(input.randomId ? { randomId: input.randomId } : {}),
         ...(input.now ? { now: input.now } : {}),
       };
+      const previous = priceRegistry.current;
       bumpPriceSheet(priceRegistry, draft, bumpOptions);
       const ended = closeActiveStreamsOnPriceChange();
+      // A price change ends every open stream, so it is an operator
+      // action with a blast radius, not a config tweak. The ledger
+      // records the resulting `stream.ended` entries; this records the
+      // decision that caused them.
+      void input.store
+        .appendAudit({
+          action: "prices.updated",
+          actor: "operator",
+          outcome: "succeeded",
+          subject: `version:${previous.version}->${priceRegistry.current.version}`,
+          detail:
+            `perCall=${draft.perCall} perSecond=${draft.perSecond} ` +
+            `perUnit=${draft.perUnit} unit=${draft.unitName} ` +
+            `endedStreams=${ended.length}`,
+        })
+        .catch(() => {
+          // The price change itself has already happened and is durable
+          // in the streams it ended; a failed audit write must not undo
+          // it or throw into the caller.
+        });
       return { ended };
     },
 

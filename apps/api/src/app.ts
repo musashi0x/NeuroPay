@@ -14,6 +14,7 @@ import {
   type RateLimiter,
 } from "./rate-limit.js";
 import { consoleRoutes, type ConsoleRouteDeps } from "./console/routes.js";
+import { opsRoutes, readinessRoute, type OpsRouteDeps } from "./ops/routes.js";
 import { openStreamRoute, type OpenStreamDeps } from "./routes/streams/open.js";
 import {
   nextSegmentRoute,
@@ -22,6 +23,11 @@ import {
 
 export type AppDeps = {
   console?: ConsoleRouteDeps["console"];
+  /**
+   * Readiness, metrics, and the audit trail. Mounted independently of
+   * `console` so a process with no payment runtime can still be probed.
+   */
+  ops?: OpsRouteDeps;
   seller?: OpenStreamDeps["seller"] & NextSegmentDeps["seller"];
   corsOrigin?: string;
   /** Injected by tests; the runtime resolves it from the environment. */
@@ -73,6 +79,12 @@ export function createApp(deps: AppDeps = {}): Hono {
     return c.json(body);
   });
 
+  if (deps.ops) {
+    // Unauthenticated on purpose — see `ops/routes.ts` for what it does
+    // and does not publish.
+    app.route("/", readinessRoute({ ops: deps.ops.ops }));
+  }
+
   if (deps.seller) {
     // Buyer-facing. Deliberately unauthenticated: a buyer proves itself
     // by paying, not by holding an operator secret. Bounded by rate
@@ -111,6 +123,16 @@ export function createApp(deps: AppDeps = {}): Hono {
     authed.use("*", consoleAuth(mode));
     authed.route("/", consoleRoutes({ console: deps.console }));
     app.route("/", authed);
+  }
+
+  if (deps.ops) {
+    // Metrics, detailed health, and the audit trail all name internal
+    // configuration, so they sit behind the same operator token the
+    // console does.
+    const authedOps = new Hono();
+    authedOps.use("*", consoleAuth(deps.consoleAuth ?? resolveConsoleAuth()));
+    authedOps.route("/", opsRoutes(deps.ops));
+    app.route("/", authedOps);
   }
 
   app.onError((err, c) => {

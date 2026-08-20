@@ -493,3 +493,87 @@ To override the log level:
 ```bash
 LOG_LEVEL=debug pnpm --filter @neuro-pay/api dev
 ```
+
+## Health, metrics, and the audit trail
+
+`GET /health` answers "is this process running" and always has. It is
+what a supervisor restarts on, and it is nearly useless for the question
+an operator actually has, which is "can this process settle a payment
+right now" — a process with an unreachable RPC, a Permit2 address with no
+code behind it, or a settler with no gas is alive and completely unable
+to do its job.
+
+So readiness is a separate surface with a probe per dependency:
+
+| Route                               | Auth           | What it answers                                          |
+| ----------------------------------- | -------------- | -------------------------------------------------------- |
+| `GET /health`                       | none           | Liveness. Always `ok` while the process runs.            |
+| `GET /ready`                        | none           | Readiness. Check names and verdicts only. 503 when down. |
+| `GET /v1/health`                    | operator token | The same report with probe messages and firing alerts.   |
+| `GET /metrics`                      | operator token | Prometheus exposition.                                   |
+| `GET /v1/metrics`                   | operator token | The same numbers as JSON.                                |
+| `GET /v1/audit`                     | operator token | Administrative audit trail.                              |
+| `POST /v1/settlements/:nonce/retry` | operator token | Resubmit a failed settlement.                            |
+
+`/ready` is the only open one, and it publishes strictly the shape of the
+answer — which dependencies exist and whether each is healthy. That is
+what a scheduler needs and is already inferable from the service being
+reachable. The diagnosis (which RPC, which token contract, which settler
+address, and why each probe is unhappy) stays behind the token.
+
+The probes check the _claims configuration makes_, not merely that a call
+returned: the RPC answers **and it is the configured chain**; the token's
+`decimals()` answers **and it matches config**; Permit2 has code at the
+canonical address. The difference is a whole class of misconfiguration
+that otherwise surfaces as an unexplained revert after a segment has
+already been delivered.
+
+Verdicts are `ok`, `degraded`, `down`, or `skipped`. A dependency that is
+not wired in this environment reports `skipped` with the reason rather
+than being omitted — a missing line in a health report reads as "fine",
+and an unconfigured settler is not fine in production. `degraded` answers
+200 on purpose: a settler under its balance floor settles fine until it
+does not, and pulling a working instance out of rotation over a warning
+is worse than leaving it in.
+
+### Metrics are derived, not counted
+
+Nothing is an in-process counter. Every number is recomputed from the
+append-only ledger on read, which is what makes the numbers survive a
+restart, agree across two processes reading the same file, and stay
+correct after a crash. A metric you can only get by having been running
+the whole time is a metric that lies after the first deploy.
+
+Covered: payment verification outcomes and failure classifications;
+settlement counts by state; submitted-to-confirmed latency quantiles;
+unrecovered failed settlements; exposure saturation; budget headroom and
+exhaustion; session status and remaining lifetime; settler balance;
+ledger schema version.
+
+Alerts are derived the same way — recomputed on read from those metrics
+plus live process state, so they cannot go stale and need no delivery
+machinery to be correct. Thresholds are tunable; see
+`apps/api/.env.example`. Wiring them to a pager is a matter of scraping
+the endpoint.
+
+### The audit trail
+
+`GET /v1/audit` reads a second append-only table in the ledger file
+recording administrative actions: who invoked the kill switch, when a
+price sheet changed, what configuration the process booted with, every
+settlement retry. Each record carries an actor, an outcome, and the HTTP
+request id, which ties it to the access log line with the source and
+timing.
+
+It is separate from the payment ledger because every ledger row carries a
+chain, a token, and decimals — every row is a fact about money — and "an
+operator revoked the session at 14:02" has none of those. It keeps the
+same guarantees: append-only, independently ordered, and refused outright
+if a write carries key material.
+
+### Operator procedures
+
+- Settlement reconciliation, retry, and the alert playbook:
+  [`docs/runbooks/settlement-reconciliation.md`](docs/runbooks/settlement-reconciliation.md)
+- Ledger backup, restore, corruption recovery, retention, and schema
+  versioning: [`packages/ledger/README.md`](packages/ledger/README.md)

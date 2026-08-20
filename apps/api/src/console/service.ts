@@ -16,6 +16,8 @@ import {
 import type {
   Address,
   AppConfig,
+  AuditAction,
+  AuditOutcome,
   BudgetState,
   ConsoleSnapshot,
   Hex,
@@ -45,9 +47,18 @@ export type ConsoleService = {
   listPayments(): Promise<LedgerEntry[]>;
   getBudget(): Promise<BudgetState | null>;
   snapshot(): Promise<ConsoleSnapshot>;
-  revoke(): Promise<RevokeResult>;
+  revoke(context?: OperatorContext): Promise<RevokeResult>;
   /** Resubmit the on-chain stage of a revoke whose first attempt failed. */
-  retryRevoke(): Promise<RevokeResult>;
+  retryRevoke(context?: OperatorContext): Promise<RevokeResult>;
+  /**
+   * Operator recovery: move a failed settlement intent back to pending
+   * and resubmit it. Throws `ConsoleNotFoundError` when the nonce is
+   * unknown or the deployment has no settlement queue wired.
+   */
+  retrySettlement(
+    nonce: string,
+    context?: OperatorContext,
+  ): Promise<{ transactionHash: Hex }>;
   subscribe(listener: (event: ConsoleLiveEvent) => void): () => void;
   notify(): void;
   /** Abort live SSE connections and drop subscribers. */
@@ -56,11 +67,25 @@ export type ConsoleService = {
   registerSseAbort(abort: () => void): () => void;
 };
 
+/**
+ * Who asked, and under which HTTP request.
+ *
+ * Threaded from the route rather than defaulted inside the service so
+ * an action taken by a script and an action taken through the console
+ * are distinguishable in the trail — the whole point of recording an
+ * actor is that it is not always the same one.
+ */
+export type OperatorContext = {
+  actor?: string;
+  requestId?: string | null;
+};
+
 export type CreateConsoleServiceInput = {
   config: AppConfig;
   sessions: SessionStore;
   ledger: LedgerStore;
-  seller?: Pick<Seller, "inspectStreams" | "endAll">;
+  seller?: Pick<Seller, "inspectStreams" | "endAll"> &
+    Partial<Pick<Seller, "retrySettlement">>;
   now?: () => number;
   resolveStatus?: (session: PersistedSession) => Promise<SessionStatus>;
   performRevoke?: (session: PersistedSession) => Promise<RevokeResult>;
@@ -132,9 +157,15 @@ export function createConsoleService(
       return { session, streams, budget, payments };
     },
 
-    async revoke() {
+    async revoke(context) {
       const persisted = activeSession(input.sessions);
       if (!persisted) {
+        await audit(input.ledger, context, {
+          action: "session.revoke.requested",
+          outcome: "failed",
+          subject: null,
+          detail: "no active session",
+        });
         throw new ConsoleNotFoundError("no active session to revoke");
       }
 
@@ -159,11 +190,21 @@ export function createConsoleService(
         detail: `local=${result.local.revoked} onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
       });
 
+      await audit(input.ledger, context, {
+        action: "session.revoke.requested",
+        // The local stage is what stops signing, and it is synchronous.
+        // A pending on-chain stage is still a successful request; its
+        // own outcome arrives as a later retry record.
+        outcome: result.local.revoked ? "succeeded" : "failed",
+        subject: persisted.walletAddress,
+        detail: `onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
+      });
+
       service.notify();
       return result;
     },
 
-    async retryRevoke() {
+    async retryRevoke(context) {
       const snapshot = pendingRevoke;
       if (!snapshot) {
         throw new ConsoleNotFoundError("no pending on-chain revoke to retry");
@@ -188,8 +229,43 @@ export function createConsoleService(
         detail: `retry local=${result.local.revoked} onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
       });
 
+      await audit(input.ledger, context, {
+        action: "session.revoke.retry.requested",
+        outcome: result.onChain.revoked ? "succeeded" : "failed",
+        subject: snapshot.walletAddress,
+        detail: `status=${result.onChain.status ?? "null"}`,
+      });
+
       service.notify();
       return result;
+    },
+
+    async retrySettlement(nonce, context) {
+      const retry = input.seller?.retrySettlement;
+      if (!retry) {
+        throw new ConsoleNotFoundError(
+          "settlement retry is not available in this deployment",
+        );
+      }
+      try {
+        const result = await retry(nonce);
+        await audit(input.ledger, context, {
+          action: "settlement.retry.requested",
+          outcome: "succeeded",
+          subject: nonce,
+          detail: `transactionHash=${result.transactionHash}`,
+        });
+        service.notify();
+        return result;
+      } catch (err: unknown) {
+        await audit(input.ledger, context, {
+          action: "settlement.retry.requested",
+          outcome: "failed",
+          subject: nonce,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
     },
 
     subscribe(listener) {
@@ -221,6 +297,39 @@ export function createConsoleService(
   };
 
   return service;
+}
+
+/**
+ * Write one administrative record, never letting the write break the
+ * action it describes.
+ *
+ * An audit trail that can fail an operation is worse than one with a
+ * gap: it turns a bookkeeping problem into an outage, and it would make
+ * the kill switch — the one action that must always work — depend on a
+ * disk write succeeding.
+ */
+async function audit(
+  ledger: LedgerStore,
+  context: OperatorContext | undefined,
+  record: {
+    action: AuditAction;
+    outcome: AuditOutcome;
+    subject: string | null;
+    detail: string;
+  },
+): Promise<void> {
+  try {
+    await ledger.appendAudit({
+      action: record.action,
+      actor: context?.actor ?? "operator",
+      outcome: record.outcome,
+      subject: record.subject,
+      requestId: context?.requestId ?? null,
+      detail: record.detail,
+    });
+  } catch {
+    // Deliberately swallowed — see the docstring.
+  }
 }
 
 export class ConsoleNotFoundError extends Error {
