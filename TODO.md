@@ -22,7 +22,7 @@ Discovered by running the real signed-payment path against a funded BNB testnet 
 - [x] Needs an ISA/plan before more code changes: this is a coordinated rewrite across `packages/altana` (encoder, spender wiring) and `apps/api` (envelope parser, witness reader, digest recomputation, settlement plumbing), not an isolated patch. Scaffold one before resuming. _(`openspec/changes/fix-b402-wire-format/proposal.md`.)_
 
 - [x] Buyer never forwarded `maxTimeoutSeconds` (found while building the round-trip fixture): `toSdkRequirement` omitted it, so the SDK fell back to its own 3600s default and the seller's 60s cap was silently ignored — every signed deadline outlived the demand it was quoted against. Now passed through; asserted in `sign.test.ts`.
-- [ ] Prove the loop on chain. Everything above round-trips against real `signX402Payment` output offline, but no `isValidSignature` call and no `permitWitnessTransferFrom` has been executed against a deployed account. Nothing here is verified on chain until the P1 chain-97 loop below runs.
+- [ ] Prove the loop on chain. **Half done as of 2026-08-20.** `permitWitnessTransferFrom` now executes against real Permit2 on a forked chain and moves the tokens (`apps/api/src/seller/settlement.chain.test.ts`), which retires the "every settlement reverts unconditionally" risk that motivated this whole section: the permit struct, the real witness hash, the type string, and the buyer's signature are accepted by the contract that recomputes the digest from them. Still unproven: `isValidSignature` against a **deployed smart account** — the settlement test uses an EOA payer, so Permit2 took the `ecrecover` branch rather than the ERC-1271 one. That needs a live granted session, which is relay-bound and therefore only reachable on chain 97.
 
 ## P0 — payment correctness and safety
 
@@ -76,7 +76,26 @@ Discovered by running the real signed-payment path against a funded BNB testnet 
 
 ## P1 — end-to-end verification
 
-- [ ] Run the full chain-97 loop: open stream, accrue, receive 402, sign, verify, deliver, submit settlement, confirm settlement, and reconcile the ledger.
+> **Status 2026-08-20:** a local forked-EVM environment now exists
+> (`@neuro-pay/evm-testnet`, `pnpm test:chain`) and **settlement is
+> proven against real Permit2** — the first end-to-end evidence that the
+> P0 wire-format work produces a transaction the contract accepts.
+>
+> Building it surfaced a boundary that reshapes this section: `grant`,
+> `revoke`, `provisionWallet`, and `provisionRail` do **not** go through
+> the configured RPC. The SDK submits them to Altana's hosted relay,
+> which broadcasts to the real network, so pointing `rpcUrl` at a fork
+> changes where reads go and has no effect on where the relay writes.
+> Those four can only ever be verified on chain 97 — no local
+> environment will ever cover them.
+>
+> It also surfaced a blocker for the live run: **the wallet holds zero
+> payment tokens.** It was funded with gas and never with USDT
+> (`balanceOf` = 0 on 2026-08-20), so a real settlement reverts on
+> balance no matter how correct the signature is. Fund it before
+> attempting the chain-97 loop.
+
+- [ ] Run the full chain-97 loop: open stream, accrue, receive 402, sign, verify, deliver, submit settlement, confirm settlement, and reconcile the ledger. _(Blocked on funding the wallet with the payment token — see the note above. The settlement leg itself is now verified locally.)_
 - [ ] Verify the threshold path independently.
 - [ ] Verify the tick path independently with traffic below the threshold.
 - [ ] Verify over-budget refusal before signing.
@@ -86,7 +105,11 @@ Discovered by running the real signed-payment path against a funded BNB testnet 
 - [ ] Verify idempotency by replaying an accepted envelope and comparing the exact response and unchanged accrual.
 - [ ] Verify kill switch behavior mid-stream, including immediate local signing stop and confirmed on-chain revocation.
 - [ ] Verify exposure bounding by stalling settlement, reaching the configured limit, and confirming delivery resumes after settlement clears.
-- [ ] Add a repeatable local EVM integration environment for ERC-1271, Permit2, token decimals, settlement, and revoke.
+- [x] Add a repeatable local EVM integration environment for ERC-1271, Permit2, token decimals, settlement, and revoke. _(`packages/evm-testnet`: forks BNB testnet via native anvil or the foundry Docker image, whichever is present, and exposes the cheat codes that make a chain behave like a fixture — assignable balances, impersonation, `dealToken` (which finds the ERC-20's balance slot by probing rather than hard-coding it per token), instant blocks, and `withSnapshot` so a destructive test is repeatable. Run with `pnpm test:chain`; with no runner or no fork endpoint the suites **skip with a reason** rather than failing a fresh clone's build._
+      _**Covered:** Permit2 deployment, the token's real `decimals()` in both directions, the keystore `isValidKey` authority read, and `permitWitnessTransferFrom` — `apps/api/src/seller/settlement.chain.test.ts` settles a real signed permit through real Permit2 and asserts the tokens moved, plus the failure modes (replayed nonce, wrong spender, tampered witness)._
+      _**Not covered, and never will be here:** revoke and grant. Both are relay-bound — see the section note. `packages/altana/src/session/lifecycle.chain.test.ts` records why in place of the tests that cannot exist._
+      _**Not deterministic across runs:** pinning a fork block needs an archive endpoint, and the public BNB testnet endpoints prune state past roughly a thousand blocks. The suites establish their own state instead of assuming any._
+      _One trap worth knowing: anvil's well-known dev accounts are EIP-7702-delegated on BNB testnet, so Permit2 sees code, skips `ecrecover`, and calls ERC-1271 on the delegate — an empty revert that explains nothing. `cheats.setCode(addr, "0x")` restores them to plain EOAs.)_
 
 ## P1 — security and access control
 
@@ -165,6 +188,6 @@ These tasks remain unchecked in `openspec/changes/add-x402-micropayment-streamin
 
 ## Verification task
 
-- [x] Run `pnpm check` on the current checkout after implementation and resolve all lint, typecheck, test, build, and format failures. _(green 2026-08-20 after the P2 observability work: 27 tasks; 579 tests across the five test packages (api 264, altana 159, metering 91, ledger 60, web 5).)_
+- [x] Run `pnpm check` on the current checkout after implementation and resolve all lint, typecheck, test, build, and format failures. _(green 2026-08-20 after the local-EVM work: 31 tasks, 587 tests. `pnpm test:chain` is separate and also green — 14 tests across two forked-chain suites — and is not part of `pnpm check` by design.)_
 - [x] Re-run `git status --short` and confirm only intended files are changed. _(2026-08-20: 16 modified, 8 added — all under `apps/api/src/ops/`, `packages/ledger`, `packages/types`, `docs/runbooks/`, and the four docs. No build output, no `.data/`, no stray scratch files.)_
 - [x] Update `README.md` and the OpenSpec tasks/specs whenever an item above is implemented or its scope changes. _(2026-08-20: `README.md` gained a "Health, metrics, and the audit trail" section; `packages/ledger/README.md` gained schema-versioning, audit-trail, and backup/recovery sections; `openspec/specs/api-server/spec.md` gained three requirements — readiness, operator observability endpoints, operator settlement retry. Re-check on the next implemented item; this line is standing, not one-shot.)_

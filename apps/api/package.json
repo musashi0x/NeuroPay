@@ -12,7 +12,8 @@
     "test": "vitest run",
     "demo": "tsx --env-file-if-exists=.env scripts/demo-stream.ts",
     "demo:real": "tsx --env-file-if-exists=.env scripts/demo-real-signing.ts",
-    "seed:session": "tsx --env-file-if-exists=.env scripts/seed-session.ts"
+    "seed:session": "tsx --env-file-if-exists=.env scripts/seed-session.ts",
+    "test:chain": "vitest run --config vitest.chain.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@altananetwork/sdk": "catalog:",
     "@neuro-pay/eslint-config": "workspace:*",
+    "@neuro-pay/evm-testnet": "workspace:*",
     "@neuro-pay/tsconfig": "workspace:*",
     "@types/node": "^22.18.12",
     "eslint": "catalog:",

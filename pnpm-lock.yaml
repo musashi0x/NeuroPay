@@ -75,6 +75,9 @@ importers:
       '@neuro-pay/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@neuro-pay/evm-testnet':
+        specifier: workspace:*
+        version: link:../../packages/evm-testnet
       '@neuro-pay/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
@@ -173,6 +176,9 @@ importers:
       '@neuro-pay/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@neuro-pay/evm-testnet':
+        specifier: workspace:*
+        version: link:../evm-testnet
       '@neuro-pay/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

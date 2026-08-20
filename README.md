@@ -577,3 +577,72 @@ if a write carries key material.
   [`docs/runbooks/settlement-reconciliation.md`](docs/runbooks/settlement-reconciliation.md)
 - Ledger backup, restore, corruption recovery, retention, and schema
   versioning: [`packages/ledger/README.md`](packages/ledger/README.md)
+
+## Local EVM integration tests
+
+Some things can only be verified against a real EVM. `pnpm test` runs
+against stubs and asserts what the code _passes_; a settlement asserts
+what Permit2 _accepts_, and those are different claims. The P0
+wire-format defects — an empty signature, a witness hash invented from
+the nonce, a malformed type string — were all invisible to unit tests
+and all produced unconditional on-chain reverts.
+
+`@neuro-pay/evm-testnet` forks BNB testnet locally so those claims can be
+checked. It is a separate command because each suite boots a chain and
+needs network:
+
+```bash
+FORK_RPC_URL=https://data-seed-prebsc-1-s1.bnbchain.org:8545 pnpm test:chain
+```
+
+Needs foundry (`brew install foundry`) or a running Docker daemon — the
+launcher detects either, preferring the native binary. With neither, the
+suites **skip with a reason** rather than failing, so a fresh clone still
+builds green. That also means a green `pnpm test` says nothing about the
+chain suites; `pnpm test:chain` has to be run on purpose.
+
+### Why fork rather than deploy to a blank chain
+
+Altana's smart account and session keystore are consumed through
+`@altananetwork/sdk`; this repo has neither their source nor their
+bytecode, so there is nothing to deploy. A fork puts every contract at
+its real address, including Permit2 and the real ERC-20 with its real
+`decimals()`.
+
+### What a fork can and cannot prove
+
+**Forkable** — anything that is an `eth_call` or a transaction this
+process signs and sends: Permit2's deployment and
+`permitWitnessTransferFrom`, the token's decimals and transfers, the
+keystore's `isValidKey` authority read.
+
+**Not forkable** — `grantSession`, `revokeSession`, `provisionWallet`,
+`provisionRail`. These do not go through the configured RPC at all: the
+SDK submits them to **Altana's hosted relay**, which broadcasts to the
+real network. Pointing `rpcUrl` at a fork changes where reads go and has
+no effect on where the relay writes. That half can only ever be verified
+against chain 97, which is why it stays on the P1 list.
+
+### What this closed
+
+`apps/api/src/seller/settlement.chain.test.ts` settles a real signed
+permit through real Permit2 and asserts the tokens moved — the first
+end-to-end proof that the P0 wire-format work produces a settlement the
+contract accepts. It also pins the failure modes: a replayed nonce, a
+signature bound to the wrong spender, and a tampered witness.
+
+Two findings worth knowing before writing more of these:
+
+- **The live wallet holds zero payment tokens.** It was funded with gas
+  and never with USDT, so a settlement against it would revert on
+  balance regardless of signature correctness. Tests deal themselves a
+  balance with `cheats.dealToken`; a real chain-97 run needs the wallet
+  funded first.
+- **Anvil's dev accounts are not clean EOAs on BNB testnet.** Somebody
+  has EIP-7702-delegated those well-known keys, so Permit2 sees code at
+  the address, skips `ecrecover`, and calls ERC-1271 on the delegate —
+  failing with an empty revert that explains nothing. Clear it with
+  `cheats.setCode(addr, "0x")`.
+
+Details, cheat-code reference, and the determinism caveats:
+[`packages/evm-testnet/README.md`](packages/evm-testnet/README.md).

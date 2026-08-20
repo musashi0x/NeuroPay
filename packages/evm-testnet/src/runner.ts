@@ -132,8 +132,14 @@ function detect(): Runner | null {
         "--init",
         "-p",
         `127.0.0.1:${port}:8545`,
-        FOUNDRY_IMAGE,
+        // The foundry image's entrypoint is a shell wrapper, so passing
+        // `anvil` as the first *argument* makes it `$0` rather than the
+        // command — anvil then starts with no flags at all and quietly
+        // ignores the port and fork settings. Overriding the entrypoint
+        // is what makes the arguments below mean what they say.
+        "--entrypoint",
         "anvil",
+        FOUNDRY_IMAGE,
         // Inside the container anvil must bind all interfaces or the
         // published port maps onto nothing.
         "--host",

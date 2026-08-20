@@ -9,18 +9,21 @@
  *
  * A fork is only repeatable if the block it forks from is pinned. Left
  * unpinned it follows the head of a public testnet, which means the same
- * test reads different balances, different nonces, and a different
- * session state on two runs an hour apart. `forkBlockNumber` is
- * therefore recorded in config rather than passed per call — see
- * `./fork-config.js` — and a test that needs a specific chain state pins
- * its own.
+ * test reads different balances, different nonces, and different account
+ * state on two runs an hour apart.
  *
- * What a fork cannot make hermetic is the *first* run: the fork provider
- * fetches state over the network on demand. Anvil caches what it fetches
- * for the process lifetime, and pinning the block makes that cache
- * reusable across runs, but the network is still a dependency. That is
- * the honest trade for being able to exercise contracts whose source we
- * do not have.
+ * `forkBlockNumber` pins it — but only against an **archive** endpoint.
+ * The public BNB testnet endpoints are pruned: state more than roughly a
+ * thousand blocks old answers `missing trie node`, so pinning anything
+ * but a block from the last few minutes fails outright. The default is
+ * therefore to follow the head, and a suite is expected to establish
+ * whatever state it depends on with the cheat codes rather than assume
+ * it. Point `FORK_RPC_URL` at an archive endpoint when byte-level
+ * reproducibility matters.
+ *
+ * What a fork cannot make hermetic either way is the network itself: the
+ * fork provider fetches state on demand. That is the honest trade for
+ * being able to exercise contracts whose source we do not have.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -187,7 +190,10 @@ export async function startLocalChain(
 async function waitForChain(
   rpcUrl: string,
   timeoutMs: number,
-  exitState: () => { code: number | null; signal: NodeJS.Signals | null } | null,
+  exitState: () => {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null,
   stderr: () => string,
 ): Promise<number> {
   const deadline = Date.now() + timeoutMs;

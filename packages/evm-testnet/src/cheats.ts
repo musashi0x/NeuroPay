@@ -14,6 +14,8 @@
  * without either the real key or a fresh grant.
  */
 
+import { encodeAbiParameters, keccak256, pad as padHex } from "viem";
+
 import type { Address, Hex } from "@neuro-pay/types";
 
 type RpcParam = string | number | boolean | null;
@@ -68,7 +70,36 @@ export type Cheats = {
   revert: (id: Hex) => Promise<boolean>;
   /** Current block number. */
   blockNumber: () => Promise<bigint>;
+  /**
+   * Give `holder` a token balance by writing the ERC-20's storage.
+   *
+   * The alternative is begging a faucet, which is not a thing a test can
+   * do. Returns the storage slot index that worked, so a caller that
+   * deals repeatedly can skip the search.
+   */
+  dealToken: (
+    token: Address,
+    holder: Address,
+    amount: bigint,
+    knownSlot?: number,
+  ) => Promise<number>;
 };
+
+/** `balanceOf(address)` selector. */
+const BALANCE_OF = "0x70a08231";
+
+/**
+ * Storage slot of `balances[holder]` for a Solidity `mapping(address => uint256)`
+ * declared at slot `index`: `keccak256(abi.encode(holder, index))`.
+ */
+function balanceSlot(holder: Address, index: number): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "address" }, { type: "uint256" }],
+      [holder, BigInt(index)],
+    ),
+  ) as Hex;
+}
 
 export function createCheats(rpcUrl: string): Cheats {
   return {
@@ -101,6 +132,50 @@ export function createCheats(rpcUrl: string): Cheats {
     revert: (id) => rpc<boolean>(rpcUrl, "evm_revert", [id]),
     blockNumber: async () =>
       BigInt(await rpc<Hex>(rpcUrl, "eth_blockNumber", [])),
+
+    dealToken: async (token, holder, amount, knownSlot) => {
+      const readBalance = async (): Promise<bigint> => {
+        const data = (BALANCE_OF +
+          padHex(holder, { size: 32 }).slice(2)) as Hex;
+        const result = await rpc<Hex>(rpcUrl, "eth_call", [
+          // `eth_call` params are objects, not scalars; the narrow
+          // `RpcParam` type does not describe them.
+          { to: token, data } as unknown as string,
+          "latest",
+        ]);
+        return BigInt(result);
+      };
+
+      const value = padHex(`0x${amount.toString(16)}`, { size: 32 }) as Hex;
+      // Which slot holds the balances mapping is a property of how the
+      // token was compiled, and there is no way to read it from the ABI.
+      // So: write a candidate slot, ask `balanceOf`, and keep the one
+      // the contract agrees with. Searching beats hard-coding a slot per
+      // token, and a wrong guess is harmless — it writes to an unused
+      // slot on a throwaway fork.
+      const candidates =
+        knownSlot === undefined
+          ? Array.from({ length: 32 }, (_, i) => i)
+          : [knownSlot];
+      for (const index of candidates) {
+        const slot = balanceSlot(holder, index);
+        const previous = await rpc<Hex>(rpcUrl, "eth_getStorageAt", [
+          token,
+          slot,
+          "latest",
+        ]);
+        await rpc(rpcUrl, "anvil_setStorageAt", [token, slot, value]);
+        if ((await readBalance()) === amount) return index;
+        // Put it back so the search leaves no debris in slots that
+        // belong to some other mapping.
+        await rpc(rpcUrl, "anvil_setStorageAt", [token, slot, previous]);
+      }
+      throw new Error(
+        `could not locate the balances mapping for ${token}: tried slots ` +
+          `0-${candidates.length - 1}. The token may use a non-standard ` +
+          `layout (a proxy, or a struct-valued mapping).`,
+      );
+    },
   };
 }
 

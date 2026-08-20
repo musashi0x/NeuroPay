@@ -41,8 +41,12 @@ async function main(): Promise<void> {
   console.log(`local chain up via ${chain.runner}`);
   console.log(`  rpc      ${chain.rpcUrl}`);
   console.log(`  chainId  ${chain.chainId}`);
-  console.log(`  block    ${block}${forkBlockNumber === undefined ? " (following head)" : " (pinned)"}`);
-  console.log(`  accounts ${chain.accounts.map((a) => a.address).join("\n           ")}`);
+  console.log(
+    `  block    ${block}${forkBlockNumber === undefined ? " (following head)" : " (pinned)"}`,
+  );
+  console.log(
+    `  accounts ${chain.accounts.map((a) => a.address).join("\n           ")}`,
+  );
   console.log(`\nCtrl-C to stop.`);
 
   const shutdown = (): void => {
