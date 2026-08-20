@@ -23,6 +23,7 @@ import type { Address, Hex, X402PaymentRequired } from "@neuro-pay/types";
 import type { Clock } from "@neuro-pay/metering";
 import { parseEnvelope, type ParsedEnvelope } from "./envelope.js";
 import {
+  buildPermit2Verifier,
   IS_VALID_SIGNATURE_MAGIC,
   recomputePermit2Digest,
   verifyEnvelope,
@@ -341,5 +342,122 @@ describe("verify - wrong chain is a digest mismatch, not a field compare", () =>
     if (res.kind === "fail") {
       expect(res.classification).toBe("verification-failed");
     }
+  });
+});
+
+/**
+ * Regression coverage for the two defects that made the live chain-97
+ * loop reject every real payment.
+ *
+ * Both are invisible without a chain and both are one-line reverts to
+ * make, which is exactly why they are pinned here rather than left to
+ * the integration suite.
+ */
+describe("buildPermit2Verifier addresses the right contract as the right caller", () => {
+  const PERMIT2_ADDR = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address;
+  const PAYER_ADDR = "0x65da8DB91431B54d437883eB70F9a13Ea3722C24" as Address;
+  const HASH = `0x${"ab".repeat(32)}` as Hex;
+  const SIGNATURE = `0x${"cd".repeat(98)}` as Hex;
+
+  function recordingClient(result: unknown = IS_VALID_SIGNATURE_MAGIC) {
+    const calls: {
+      address: Address;
+      functionName: string;
+      account?: Address;
+    }[] = [];
+    return {
+      calls,
+      client: {
+        readContract: async (input: {
+          address: Address;
+          functionName: string;
+          account?: Address;
+        }) => {
+          calls.push({
+            address: input.address,
+            functionName: input.functionName,
+            ...(input.account ? { account: input.account } : {}),
+          });
+          if (result instanceof Error) throw result;
+          return result;
+        },
+      },
+    };
+  }
+
+  it("asks the payer's account, never Permit2", async () => {
+    // ERC-1271 is implemented by the *signer*. Permit2 has no
+    // `isValidSignature` at all, so asking it there reverts with empty
+    // data and every payment is refused as `verification-failed` —
+    // blaming the buyer for the seller pointing at the wrong address.
+    const { calls, client } = recordingClient();
+    const verifier = buildPermit2Verifier({
+      client,
+      permit2Address: PERMIT2_ADDR,
+      abi: [],
+    });
+
+    await verifier({ payer: PAYER_ADDR, hash: HASH, signature: SIGNATURE });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.address).toBe(PAYER_ADDR);
+    expect(calls[0]?.address).not.toBe(PERMIT2_ADDR);
+  });
+
+  it("impersonates Permit2 as the caller", async () => {
+    // A session-key account answers ERC-1271 differently depending on
+    // who asks: its permissions allow calls *to Permit2*, so it returns
+    // the magic value only when Permit2 is the caller. Measured against
+    // the live account, every other caller — the default, the settler,
+    // even the payer itself — gets `0xffffffff` for a signature Permit2
+    // then accepts at settlement.
+    const { calls, client } = recordingClient();
+    const verifier = buildPermit2Verifier({
+      client,
+      permit2Address: PERMIT2_ADDR,
+      abi: [],
+    });
+
+    await verifier({ payer: PAYER_ADDR, hash: HASH, signature: SIGNATURE });
+
+    expect(calls[0]?.account).toBe(PERMIT2_ADDR);
+  });
+
+  it("treats a typed revert as a rejected signature, not a failed read", async () => {
+    // Real accounts revert with `InvalidSignature()` rather than
+    // returning a non-magic bytes4. Propagating that would report a
+    // refused payment as an infrastructure fault.
+    const error = Object.assign(new Error("reverted"), {
+      cause: { data: "0x8baa579f" },
+    });
+    const { client } = recordingClient(error);
+    const verifier = buildPermit2Verifier({
+      client,
+      permit2Address: PERMIT2_ADDR,
+      abi: [],
+    });
+
+    await expect(
+      verifier({ payer: PAYER_ADDR, hash: HASH, signature: SIGNATURE }),
+    ).resolves.toBe("0x8baa579f");
+  });
+
+  it("still throws when the revert carries no data", async () => {
+    // An empty revert is what an address with no such function does. It
+    // means the verifier is pointed somewhere wrong, which must not be
+    // reported as the buyer's signature being bad.
+    const error = Object.assign(new Error("reverted"), {
+      cause: { data: "0x" },
+    });
+    const { client } = recordingClient(error);
+    const verifier = buildPermit2Verifier({
+      client,
+      permit2Address: PERMIT2_ADDR,
+      abi: [],
+    });
+
+    await expect(
+      verifier({ payer: PAYER_ADDR, hash: HASH, signature: SIGNATURE }),
+    ).rejects.toThrow();
   });
 });

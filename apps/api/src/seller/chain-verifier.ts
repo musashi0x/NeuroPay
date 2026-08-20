@@ -22,12 +22,16 @@ import {
 import { logger } from "../logger.js";
 
 /**
- * The Permit2 `isValidSignature(bytes32,bytes)` ABI fragment.
+ * The ERC-1271 `isValidSignature(bytes32,bytes)` ABI fragment.
  *
  * Inlined rather than imported from the SDK to keep the seller package
- * independent of `@altananetwork/sdk`'s internal shape. The 4-byte selector
+ * independent of `@altananetwork/sdk`'s internal shape. The 4-byte magic
  * is `0x1626ba7e`; viem reads return `bytes4` as a left-padded 32-byte
  * hex, which `verifyEnvelope` normalizes.
+ *
+ * Called on the **payer's account**, not on Permit2 — Permit2 has no
+ * such function. See `buildPermit2Verifier` for why that distinction
+ * rejected every real payment before it was fixed.
  */
 export const PERMIT2_IS_VALID_SIGNATURE_ABI = [
   {

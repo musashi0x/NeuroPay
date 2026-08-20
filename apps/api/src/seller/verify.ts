@@ -292,6 +292,12 @@ export type PublicClientLike = {
     abi: readonly unknown[];
     functionName: string;
     args: readonly unknown[];
+    /**
+     * Sets `from` on the underlying `eth_call`. Load-bearing for
+     * ERC-1271 against a session-key account — see
+     * `buildPermit2Verifier`.
+     */
+    account?: Address;
   }) => Promise<unknown>;
 };
 
@@ -300,23 +306,119 @@ export type PublicClientLike = {
  * composition root in `seller/index.ts`) can compose it without needing
  * viem imports in the route layer.
  */
+/**
+ * Build the production ERC-1271 verifier.
+ *
+ * ## The call target is the payer, not Permit2
+ *
+ * ERC-1271 is a method a *signer account* implements: the account is
+ * asked whether a signature over a hash is one it considers its own.
+ * Permit2 is the counterparty, not the signer — it has no
+ * `isValidSignature` at all, and calling it there hits the fallback and
+ * reverts with empty data. That was this function's original behaviour
+ * and it rejected every real payment with `verification-failed`,
+ * pointing the blame at the buyer's signature rather than at the
+ * address being asked.
+ *
+ * Permit2 itself does exactly what this does when it settles: it calls
+ * `IERC1271(owner).isValidSignature(...)` on the account. Checking the
+ * same thing here, before delivering, is the entire point of the
+ * pre-check.
+ *
+ * ## The caller has to be Permit2
+ *
+ * A session-key account does not answer ERC-1271 the same way for
+ * everyone. The session's permissions allow calls *to Permit2*, so the
+ * account validates against `msg.sender` and returns the magic value
+ * only when Permit2 is asking. Measured against the live account with
+ * one real signature: caller Permit2 returns `0x1626ba7e`, while the
+ * default caller, the settler, and even the payer itself all return
+ * `0xffffffff`.
+ *
+ * So the read carries `account: permit2Address`, which sets `from` on
+ * the `eth_call`. Without it the pre-check disagrees with the chain and
+ * refuses payments that settle perfectly well — verified by simulating
+ * `permitWitnessTransferFrom` with the same signature on a fork, where
+ * Permit2 accepts it.
+ *
+ * ## A revert means "no", not "broken"
+ *
+ * A conforming account returns a non-magic `bytes4` for a bad
+ * signature, but real ones — the EIP-7702 account this runs against
+ * included — revert with a typed error such as `InvalidSignature()`
+ * instead. Letting that propagate would report a rejected signature as
+ * an infrastructure failure, so a revert carrying data is folded back
+ * into an ordinary non-magic answer and travels the normal rejection
+ * path. A revert with *no* data is different: that is what an address
+ * with no such function does, and it stays an error, because it means
+ * the verifier is pointed somewhere wrong.
+ */
 export function buildPermit2Verifier(input: {
   client: PublicClientLike;
+  /**
+   * The caller the read impersonates, and the address the deployment
+   * guard in `chain-verifier.ts` checks. Never the call target.
+   */
   permit2Address: Address;
-  /** The 4-byte ERC-1271 selector + ABI for Permit2's `isValidSignature(bytes32,bytes)` overload. */
+  /** ABI for the ERC-1271 `isValidSignature(bytes32,bytes)` method. */
   abi: readonly unknown[];
 }): Verifier {
   return async ({ payer, hash, signature }) => {
-    const result = await input.client.readContract({
-      address: input.permit2Address,
-      abi: input.abi,
-      functionName: "isValidSignature",
-      args: [hash, signature],
-    });
-    // The verifier must be called with `msg.sender == payer` for an
-    // ERC-1271 validator; in our composition the call is dispatched with
-    // `payer` as sender. The read just returns the magic.
-    void payer;
-    return result as Hex;
+    try {
+      const result = await input.client.readContract({
+        address: payer,
+        abi: input.abi,
+        functionName: "isValidSignature",
+        args: [hash, signature],
+        // Impersonate Permit2 for the read. This is what makes the
+        // pre-check ask the same question settlement will.
+        account: input.permit2Address,
+      });
+      return result as Hex;
+    } catch (cause: unknown) {
+      const revertData = extractRevertData(cause);
+      if (revertData !== null && revertData !== "0x") {
+        // The account executed and said no. Hand back something that is
+        // not the magic value so the caller classifies it as a rejected
+        // signature rather than a failed read.
+        return revertData as Hex;
+      }
+      throw cause;
+    }
   };
+}
+
+/**
+ * Pull the revert payload out of a viem error, if it carries one.
+ *
+ * An empty payload and an absent one are reported the same way here
+ * (`"0x"` and `null` respectively) but mean different things to the
+ * caller, so they stay distinguishable.
+ */
+function extractRevertData(cause: unknown): string | null {
+  let current: unknown = cause;
+  for (
+    let depth = 0;
+    depth < 8 && current !== null && current !== undefined;
+    depth += 1
+  ) {
+    const node = current as {
+      data?: unknown;
+      cause?: unknown;
+      signature?: unknown;
+    };
+    if (typeof node.data === "string" && node.data.startsWith("0x")) {
+      return node.data;
+    }
+    if (typeof node.signature === "string" && node.signature.startsWith("0x")) {
+      return node.signature;
+    }
+    current = node.cause;
+  }
+  // viem renders a typed revert it cannot decode into the message; the
+  // selector is still the account's answer.
+  const message = cause instanceof Error ? cause.message : "";
+  const match =
+    /reverted with the following signature:\s*(0x[0-9a-fA-F]{8})/.exec(message);
+  return match ? (match[1] as string) : null;
 }
