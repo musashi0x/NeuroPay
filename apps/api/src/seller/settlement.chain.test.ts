@@ -46,6 +46,9 @@ import {
   createCheats,
   describeSkipReason,
   startLocalChain,
+  TEST_TOKEN_ABI,
+  TEST_TOKEN_BYTECODE,
+  TEST_TOKEN_METADATA,
   type Cheats,
   type LocalChain,
 } from "@neuro-pay/evm-testnet";
@@ -63,7 +66,7 @@ import {
   parseAbi,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { bscTestnet } from "viem/chains";
 import type { Address, Hex, SmallestUnits } from "@neuro-pay/types";
 
@@ -145,6 +148,7 @@ describe.skipIf(!chainAvailable())(
       return {
         streamId: "stream-chain-1",
         nonce: "1",
+        chainId: CHAIN_ID,
         amount: AMOUNT,
         payer: payer.address as Address,
         payTo,
@@ -153,7 +157,7 @@ describe.skipIf(!chainAvailable())(
         deadline: Math.floor(Date.now() / 1000) + 3_600,
         sessionPublicKey: null,
         ...overrides,
-      } as SettlementInput;
+      };
     }
 
     function settlerFor(): ReturnType<typeof createChainBackedSettler> {
@@ -356,3 +360,218 @@ describe.skipIf(!chainAvailable())(
     });
   },
 );
+
+/**
+ * The same settlement, against the token this project actually deploys.
+ *
+ * The suite above uses a third-party ERC-20 and reaches its balance by
+ * probing storage slots. That proves Permit2 accepts our calldata, but
+ * it says nothing about whether `NeuroPayTestUSD` — the token that
+ * replaces an unmintable one in `TOKEN_ADDRESS` — behaves correctly
+ * underneath it.
+ *
+ * It is a hand-written ERC-20, so the parts worth checking are the ones
+ * hand-written ERC-20s get wrong: whether Permit2's `transferFrom`
+ * against an infinite approval works, and whether the balances move by
+ * the right amounts. Deploying it here means that is verified before a
+ * single real transaction is broadcast.
+ */
+describe.skipIf(!chainAvailable())("settlement through NeuroPayTestUSD", () => {
+  let chain: LocalChain;
+  let cheats: Cheats;
+  let publicClient: PublicClient;
+  let ledger: LedgerStore;
+  let token: Address;
+
+  const payer = privateKeyToAccount(
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+  );
+  const settler = privateKeyToAccount(
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+  );
+  const payTo = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC" as Address;
+  const MINTED = 1_000n * 10n ** 18n;
+
+  beforeAll(async () => {
+    chain = await startLocalChain();
+    cheats = createCheats(chain.rpcUrl);
+    ledger = openLedgerStore({ storagePath: ":memory:" });
+    publicClient = createPublicClient({
+      chain: { ...bscTestnet, id: CHAIN_ID },
+      transport: http(chain.rpcUrl),
+    }) as PublicClient;
+
+    await cheats.setBalance(payer.address as Address, GAS_FLOAT);
+    await cheats.setBalance(settler.address as Address, GAS_FLOAT);
+    // Same inherited-delegation trap as above.
+    await cheats.setCode(payer.address as Address, "0x");
+    await cheats.setCode(settler.address as Address, "0x");
+    await cheats.setCode(payTo, "0x");
+
+    const wallet = createWalletClient({
+      account: payer,
+      chain: { ...bscTestnet, id: CHAIN_ID },
+      transport: http(chain.rpcUrl),
+    });
+    const deployHash = await wallet.deployContract({
+      abi: TEST_TOKEN_ABI,
+      bytecode: TEST_TOKEN_BYTECODE,
+      args: [],
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: deployHash,
+    });
+    token = receipt.contractAddress as Address;
+
+    // Mint, then approve Permit2 — the two steps the deploy script and
+    // the provisioning script perform on the real chain.
+    await publicClient.waitForTransactionReceipt({
+      hash: await wallet.writeContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "mint",
+        args: [payer.address as Address, MINTED],
+      }),
+    });
+    await publicClient.waitForTransactionReceipt({
+      hash: await wallet.writeContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "approve",
+        args: [PERMIT2_ADDRESS as Address, 2n ** 256n - 1n],
+      }),
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    ledger?.close();
+    await chain?.stop();
+  });
+
+  it("deploys with the metadata the configuration expects", async () => {
+    const [symbol, decimals] = await Promise.all([
+      publicClient.readContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "symbol",
+      }),
+      publicClient.readContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "decimals",
+      }),
+    ]);
+    expect(symbol).toBe(TEST_TOKEN_METADATA.symbol);
+    // 18 matches the token it replaces, so no cap, threshold, or price
+    // in the existing configuration has to be rescaled.
+    expect(Number(decimals)).toBe(TEST_TOKEN_METADATA.decimals);
+  });
+
+  it("mints without an owner, which is the whole point", async () => {
+    // The token being replaced reverts here for everyone but its owner,
+    // which is why funding a test wallet was a manual, rate-limited
+    // errand. A stranger minting to themselves must just work.
+    //
+    // A freshly generated key rather than a dev account: dev account 2
+    // is already `payTo`, so minting to it would land in the address the
+    // settlement assertion below measures.
+    const stranger = privateKeyToAccount(generatePrivateKey());
+    await cheats.setBalance(stranger.address as Address, GAS_FLOAT);
+    await cheats.setCode(stranger.address as Address, "0x");
+
+    const wallet = createWalletClient({
+      account: stranger,
+      chain: { ...bscTestnet, id: CHAIN_ID },
+      transport: http(chain.rpcUrl),
+    });
+    await publicClient.waitForTransactionReceipt({
+      hash: await wallet.writeContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "mint",
+        args: [stranger.address as Address, 7n],
+      }),
+    });
+    const balance = await publicClient.readContract({
+      address: token,
+      abi: TEST_TOKEN_ABI,
+      functionName: "balanceOf",
+      args: [stranger.address as Address],
+    });
+    expect(balance).toBe(7n);
+  }, 60_000);
+
+  it("settles through Permit2 and moves the right amounts", async () => {
+    const deadline = Math.floor(Date.now() / 1000) + 3_600;
+    const witness = { to: payTo, validAfter: "0" };
+    const digest = permit2WitnessDigest({
+      chainId: CHAIN_ID,
+      authorization: {
+        permitted: { token, amount: AMOUNT },
+        spender: settler.address as Address,
+        nonce: "9",
+        deadline,
+        witness,
+      },
+    });
+    const signature = (await payer.sign({ hash: digest })) as Hex;
+
+    const walletClient = createWalletClient({
+      account: settler,
+      chain: { ...bscTestnet, id: CHAIN_ID },
+      transport: http(chain.rpcUrl),
+    });
+    const settlerHandle = createChainBackedSettler({
+      walletClient,
+      publicClient,
+      settlerAddress: settler.address as Address,
+      permit2Address: PERMIT2_ADDRESS as Address,
+      chainId: CHAIN_ID,
+      ledger,
+      lostTxTimeoutMs: 30_000,
+      pollIntervalMs: 200,
+    });
+
+    const submitted = await settlerHandle.submitSettle({
+      streamId: "stream-npusd",
+      nonce: "9",
+      chainId: CHAIN_ID,
+      amount: AMOUNT,
+      payer: payer.address as Address,
+      payTo,
+      token,
+      tokenDecimals: 18,
+      deadline,
+      sessionPublicKey: null,
+      authorization: {
+        signature,
+        spender: settler.address as Address,
+        witness,
+      },
+    });
+
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: submitted.transactionHash,
+    });
+    expect(receipt.status).toBe("success");
+
+    // Both sides of the transfer, not just the credit: a token that
+    // credits without debiting would pass a one-sided assertion.
+    const [payerBalance, recipientBalance] = await Promise.all([
+      publicClient.readContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "balanceOf",
+        args: [payer.address as Address],
+      }),
+      publicClient.readContract({
+        address: token,
+        abi: TEST_TOKEN_ABI,
+        functionName: "balanceOf",
+        args: [payTo],
+      }),
+    ]);
+    expect(recipientBalance).toBe(AMOUNT);
+    expect(payerBalance).toBe(MINTED - AMOUNT);
+  }, 120_000);
+});

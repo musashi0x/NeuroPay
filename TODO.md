@@ -89,13 +89,20 @@ Discovered by running the real signed-payment path against a funded BNB testnet 
 > Those four can only ever be verified on chain 97 — no local
 > environment will ever cover them.
 >
-> It also surfaced a blocker for the live run: **the wallet holds zero
-> payment tokens.** It was funded with gas and never with USDT
-> (`balanceOf` = 0 on 2026-08-20), so a real settlement reverts on
-> balance no matter how correct the signature is. Fund it before
-> attempting the chain-97 loop.
+> The wallet-funding blocker is **resolved as of 2026-08-20**. It could
+> not be resolved the obvious way: the BSC testnet USDT the config named
+> (`0x337610d2…`) is owner-gated by a third party — `mint` reverts for
+> both the admin and settler keys, verified by simulation — and the
+> official faucet gates claims behind mainnet BNB and a once-per-day
+> web form. So the project now deploys its own payment token with an
+> open mint (`packages/evm-testnet/contracts/NeuroPayTestUSD.sol`,
+> `npUSD`, 18 decimals, live at
+> `0xba12ccc0e59f3d71114d147b11bc4581b723559f`). The wallet holds
+> 1,000,000 npUSD and Permit2 is approved unlimited. Funding is now a
+> function call instead of an errand, which is what a repeatable loop
+> needed.
 
-- [ ] Run the full chain-97 loop: open stream, accrue, receive 402, sign, verify, deliver, submit settlement, confirm settlement, and reconcile the ledger. _(Blocked on funding the wallet with the payment token — see the note above. The settlement leg itself is now verified locally.)_
+- [ ] Run the full chain-97 loop: open stream, accrue, receive 402, sign, verify, deliver, submit settlement, confirm settlement, and reconcile the ledger. _(No longer blocked on funding — the wallet holds 1,000,000 npUSD with Permit2 approved. What it still needs is a **granted session**, which is relay-bound: `pnpm --filter @neuro-pay/altana provision` with `SESSION_PRIVATE_KEY` set, then `pnpm --filter @neuro-pay/api demo:real` against a running seller with `SETTLER_PRIVATE_KEY` configured.)_
 - [ ] Verify the threshold path independently.
 - [ ] Verify the tick path independently with traffic below the threshold.
 - [ ] Verify over-budget refusal before signing.
@@ -163,8 +170,8 @@ Two follow-ups this left open, neither blocking:
 
 ## P2 — product and API completeness
 
-- [ ] Resolve the USDC/USDT naming inconsistency between product copy and BNB testnet configuration.
-- [ ] Validate token address, symbol, and decimals together at startup, not decimals alone.
+- [ ] Resolve the USDC/USDT naming inconsistency between product copy and BNB testnet configuration. _(Wider than first recorded: as of 2026-08-20 the configured token is neither — it is `npUSD`, this project's own test token. Product copy needs to stop naming a specific stablecoin, or the copy needs to say "test token" plainly.)_
+- [ ] Validate token address, symbol, and decimals together at startup, not decimals alone. _(Now demonstrably load-bearing: the address that shipped as the default for months was a near-inert third-party contract nobody here could mint, and decimals-only validation passed it happily every boot. Symbol and address belong in the same check.)_
 - [ ] Add API route schemas and OpenAPI or equivalent generated contract documentation.
 - [ ] Add API contract tests covering web/API wire compatibility and bigint transport revival.
 - [ ] Add explicit multi-session selection if the product moves beyond the current first-session behavior.

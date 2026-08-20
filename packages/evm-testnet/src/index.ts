@@ -69,4 +69,10 @@ export {
 } from "./runner.js";
 export type { Runner, RunnerKind } from "./runner.js";
 
-export { chainAvailable, describeSkipReason } from "./suite.js";
+export { chainAvailable, describeSkipReason, forkUrl } from "./suite.js";
+
+export {
+  TEST_TOKEN_ABI,
+  TEST_TOKEN_BYTECODE,
+  TEST_TOKEN_METADATA,
+} from "./test-token.js";

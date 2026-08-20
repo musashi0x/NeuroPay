@@ -1,0 +1,12 @@
+# Minimal foundry config for the one test contract this package ships.
+#
+# Foundry is used for compilation only — never for deployment. The deploy
+# script signs with viem in-process, so the private key never appears in
+# a container's argument list where `docker inspect` would show it.
+[profile.default]
+src = "contracts"
+out = "out"
+libs = []
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 200

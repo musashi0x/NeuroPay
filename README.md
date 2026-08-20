@@ -633,16 +633,40 @@ signature bound to the wrong spender, and a tampered witness.
 
 Two findings worth knowing before writing more of these:
 
-- **The live wallet holds zero payment tokens.** It was funded with gas
-  and never with USDT, so a settlement against it would revert on
-  balance regardless of signature correctness. Tests deal themselves a
-  balance with `cheats.dealToken`; a real chain-97 run needs the wallet
-  funded first.
+- **The payment token had to be replaced.** The BSC testnet USDT the
+  config named is owner-gated by a third party — `mint` reverts for
+  every key here — and the official faucet gates claims behind mainnet
+  BNB and a once-per-day web form. Funding a test wallet was a manual
+  errand, which is a poor foundation for a loop meant to be repeatable.
+  The project now deploys its own token
+  (`packages/evm-testnet/contracts/NeuroPayTestUSD.sol`, `npUSD`, 18
+  decimals) with an **open mint**, so funding is a function call. The
+  contract refuses to deploy on a production chain id, so a free mint
+  cannot land where it would be mistaken for value.
 - **Anvil's dev accounts are not clean EOAs on BNB testnet.** Somebody
   has EIP-7702-delegated those well-known keys, so Permit2 sees code at
   the address, skips `ecrecover`, and calls ERC-1271 on the delegate —
   failing with an empty revert that explains nothing. Clear it with
   `cheats.setCode(addr, "0x")`.
+
+### The test payment token
+
+```bash
+# rehearse against a fork — deploys, mints, reads back, broadcasts nothing
+pnpm --filter @neuro-pay/evm-testnet deploy:token -- --dry-run
+
+# broadcast for real to RPC_URL
+pnpm --filter @neuro-pay/evm-testnet deploy:token -- --yes
+
+# allow Permit2 to pull the token (needed whenever TOKEN_ADDRESS changes)
+pnpm --filter @neuro-pay/evm-testnet approve:permit2 -- --yes
+```
+
+`--dry-run` is the default posture: `--yes` is the only thing that sends
+a transaction, and the private key signs in-process rather than being
+passed to a container where `docker inspect` would expose it. Foundry is
+used to compile only; the artifact is committed so deploying needs no
+Solidity toolchain.
 
 Details, cheat-code reference, and the determinism caveats:
 [`packages/evm-testnet/README.md`](packages/evm-testnet/README.md).
