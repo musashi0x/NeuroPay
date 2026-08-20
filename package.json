@@ -15,7 +15,10 @@
     "check": "turbo lint typecheck test build && prettier --check .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:chain": "turbo test:chain"
+    "test:chain": "turbo test:chain",
+    "chain:up": "docker compose -f packages/evm-testnet/compose.yaml --env-file apps/api/.env up -d --wait",
+    "chain:down": "docker compose -f packages/evm-testnet/compose.yaml --env-file apps/api/.env down",
+    "chain:logs": "docker compose -f packages/evm-testnet/compose.yaml --env-file apps/api/.env logs -f anvil"
   },
   "devDependencies": {
     "prettier": "catalog:",

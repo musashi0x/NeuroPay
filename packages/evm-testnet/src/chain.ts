@@ -66,6 +66,15 @@ export const DEV_ACCOUNTS = [
 
 export type LocalChainOptions = {
   /**
+   * Attach to a node that is already running instead of starting one.
+   * Defaults to `EVM_TESTNET_RPC_URL`.
+   *
+   * The returned handle's `stop()` is a no-op: this process did not
+   * start the node and has no business killing something another
+   * consumer may still be using.
+   */
+  rpcUrl?: string;
+  /**
    * Network to fork. Defaults to `FORK_RPC_URL`, then `RPC_URL`.
    * Without one, `startLocalChain` throws rather than silently starting
    * a blank chain — a blank chain passes "did it start" and then fails
@@ -106,9 +115,48 @@ export class LocalChainUnavailableError extends Error {
 
 export const DEFAULT_READY_TIMEOUT_MS = 60_000;
 
+/**
+ * Deadline for attaching to a node someone else started.
+ *
+ * Much shorter than the spawn timeout on purpose: a running node answers
+ * immediately, so a long wait here only delays the moment someone learns
+ * they forgot `pnpm chain:up`. The generous budget exists for a *cold
+ * fork*, which is warming up on first contact — an external node has
+ * already done that.
+ */
+export const DEFAULT_ATTACH_TIMEOUT_MS = 8_000;
+
 export async function startLocalChain(
   options: LocalChainOptions = {},
 ): Promise<LocalChain> {
+  // Attaching short-circuits everything below: no runner to resolve, no
+  // fork URL to require (the node is already forking whatever it was
+  // told to), no port to reserve.
+  const external = options.rpcUrl ?? process.env.EVM_TESTNET_RPC_URL;
+  if (external) {
+    const chainId = await waitForChain(
+      external,
+      options.readyTimeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS,
+      () => null,
+      () => "",
+    ).catch((cause: unknown) => {
+      throw new LocalChainUnavailableError(
+        `could not reach the external chain at ${external}. Start it with ` +
+          `\`pnpm chain:up\`, or unset EVM_TESTNET_RPC_URL to let each suite ` +
+          `boot its own. Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    });
+    return {
+      rpcUrl: external,
+      chainId,
+      runner: "external",
+      forkBlockNumber: options.forkBlockNumber,
+      accounts: DEV_ACCOUNTS,
+      // Deliberately does nothing — see `rpcUrl` on the options type.
+      stop: async () => {},
+    };
+  }
+
   const runner = resolveRunner();
   if (!runner) throw new LocalChainUnavailableError(RUNNER_MISSING_MESSAGE);
 

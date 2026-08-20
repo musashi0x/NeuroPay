@@ -40,7 +40,14 @@
 
 import { execFileSync } from "node:child_process";
 
-export type RunnerKind = "native" | "docker";
+/**
+ * How the chain a suite talks to came to exist.
+ *
+ * `external` is not a runner this module resolves — it means the caller
+ * pointed at a node somebody else started (see `compose.yaml`), so
+ * nothing is spawned and nothing is torn down.
+ */
+export type RunnerKind = "native" | "docker" | "external";
 
 export type Runner = {
   kind: RunnerKind;

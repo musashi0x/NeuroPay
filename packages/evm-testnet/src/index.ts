@@ -52,6 +52,7 @@
 
 export {
   DEV_ACCOUNTS,
+  DEFAULT_ATTACH_TIMEOUT_MS,
   DEFAULT_READY_TIMEOUT_MS,
   LocalChainUnavailableError,
   startLocalChain,
@@ -73,6 +74,7 @@ export {
   announceChainSkip,
   chainAvailable,
   describeSkipReason,
+  externalRpcUrl,
   forkUrl,
 } from "./suite.js";
 

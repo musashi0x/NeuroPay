@@ -17,6 +17,12 @@
 
 import { resolveRunner, RUNNER_MISSING_MESSAGE } from "./runner.js";
 
+/** A node somebody else started, from `compose.yaml` or otherwise. */
+export function externalRpcUrl(): string | undefined {
+  const value = process.env.EVM_TESTNET_RPC_URL?.trim();
+  return value === undefined || value === "" ? undefined : value;
+}
+
 /** Fork endpoint these suites would use, if configured. */
 export function forkUrl(): string | undefined {
   return process.env.FORK_RPC_URL ?? process.env.RPC_URL;
@@ -30,6 +36,9 @@ export function forkUrl(): string | undefined {
  * "skipped: FORK_RPC_URL is not set" does not.
  */
 export function describeSkipReason(): string | null {
+  // An already-running node needs neither a local anvil nor a fork URL:
+  // it is already forking whatever it was started against.
+  if (externalRpcUrl()) return null;
   if (!resolveRunner()) return RUNNER_MISSING_MESSAGE;
   if (!forkUrl()) {
     return (

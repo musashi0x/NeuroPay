@@ -129,6 +129,45 @@ To drive the API against a chain by hand:
 pnpm --filter @neuro-pay/evm-testnet chain
 ```
 
+## A long-lived node
+
+The suites boot their own anvil per file and tear it down after, which is
+right for `pnpm test:chain`: every file gets clean state and nothing
+outlives the run. It is the wrong shape twice over — driving the API
+against a fork by hand, where the chain should outlive one process and
+keep the state you set up in it, and CI, where paying the fork warm-up
+per test file is waste.
+
+`compose.yaml` is the long-lived version. Point the suites at it and they
+attach instead of spawning:
+
+```bash
+pnpm chain:up                                          # starts, waits for healthy
+EVM_TESTNET_RPC_URL=http://127.0.0.1:8545 pnpm test:chain
+pnpm chain:logs                                        # follow the node
+pnpm chain:down
+```
+
+Attaching skips the runner probe and the fork-URL requirement entirely —
+the node is already forking whatever it was started against — and the
+handle's `stop()` is a no-op, because this process did not start the node
+and has no business killing something another consumer may still be
+using.
+
+Worth knowing:
+
+- **A shared node is shared state.** The suites snapshot and revert so
+  they clean up after themselves, but two runs against the same node at
+  once will interleave. One consumer at a time.
+- **It is bound to loopback on purpose.** The node has unlocked accounts,
+  arbitrary balance assignment, and impersonation; publishing it on
+  `0.0.0.0` would hand all of that to anything on the network.
+- **It is faster.** Attaching skips a container boot and a cold fork per
+  file — the settlement suite runs in roughly a third of the time.
+- The compose file reads `FORK_RPC_URL`, `CHAIN_ID`, `CHAIN_PORT`, and
+  `FOUNDRY_IMAGE` from `apps/api/.env` via `--env-file`. `FORK_RPC_URL`
+  is required and the file says so rather than starting a blank chain.
+
 ## Skipping is not failing
 
 When no runner or no fork URL is available, the chain suites **skip with
