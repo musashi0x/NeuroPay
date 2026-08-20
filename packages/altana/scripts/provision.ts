@@ -48,6 +48,7 @@ import {
   type CallPermission,
 } from "@altananetwork/sdk";
 import type { Address, Hex } from "@neuro-pay/types";
+import { record, waitForReceipt } from "./runbook.js";
 
 /**
  * The hardcoded calls allowlist for an agent session.
@@ -185,6 +186,12 @@ async function main(): Promise<void> {
   console.log(
     `Grant transaction: ${grantTx ?? "(pending — relay did not surface a hash)"}`,
   );
+  await recordTx({
+    ctx,
+    action: "grant",
+    wallet: wallet.walletAddress,
+    transactionHash: grantTx ?? null,
+  });
   console.log(`Session expiry: ${result.persisted.expiry}`);
   console.log(`Session public key: ${result.persisted.publicKey}`);
   console.log(`Session persisted to: ${sessionStorePath}`);
@@ -204,9 +211,61 @@ async function main(): Promise<void> {
   console.log(
     `Approve checker tx: ${rail.approveCheckerTransactionHash ?? "(pending)"}`,
   );
+  await recordTx({
+    ctx,
+    action: "approve-token",
+    wallet: wallet.walletAddress,
+    transactionHash: rail.approveTokenTransactionHash ?? null,
+  });
+  await recordTx({
+    ctx,
+    action: "approve-checker",
+    wallet: wallet.walletAddress,
+    transactionHash: rail.approveCheckerTransactionHash ?? null,
+  });
 
   console.log("");
   console.log("Provisioning complete. The session is now ready for payments.");
+  console.log(
+    `Transaction hashes recorded to the runbook — read them back any time ` +
+      `with \`pnpm --filter @neuro-pay/altana runbook\`.`,
+  );
+}
+
+/**
+ * Append one provisioning transaction to the on-chain runbook, with its
+ * gas from the receipt.
+ *
+ * Best-effort by design: a receipt that has not landed yet, or an RPC
+ * blip, must not fail a provisioning run whose transactions already
+ * succeeded. The hash is recorded either way — that is the part that
+ * cannot be recovered later.
+ */
+async function recordTx(input: {
+  ctx: Awaited<ReturnType<typeof buildAltanaClient>>;
+  action: "grant" | "approve-token" | "approve-checker";
+  wallet: string;
+  transactionHash: string | null;
+}): Promise<void> {
+  let gasUsed: string | null = null;
+  let blockNumber: string | null = null;
+  if (input.transactionHash !== null) {
+    const receipt = await waitForReceipt(
+      input.ctx.publicClient as never,
+      input.transactionHash as `0x${string}`,
+    );
+    gasUsed = receipt?.gasUsed?.toString(10) ?? null;
+    blockNumber = receipt?.blockNumber?.toString(10) ?? null;
+  }
+  record({
+    chainId: input.ctx.chain.chainId,
+    action: input.action,
+    wallet: input.wallet,
+    transactionHash: input.transactionHash,
+    status: input.transactionHash === null ? "no-hash" : "submitted",
+    gasUsed,
+    blockNumber,
+  });
 }
 
 main().then(

@@ -34,7 +34,8 @@ const CTX: EventContext = {
 };
 
 function txHash(seed: number): `0x${string}` {
-  return ("0x" + seed.toString(16).padStart(2, "0").repeat(32)) as `0x${string}`;
+  return ("0x" +
+    seed.toString(16).padStart(2, "0").repeat(32)) as `0x${string}`;
 }
 
 describe("payment.settlement.* helpers (P0)", () => {

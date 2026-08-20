@@ -1,0 +1,77 @@
+# A long-lived forked chain, for when a per-suite container is the wrong shape.
+#
+# The test suites boot their own anvil per file and tear it down after,
+# which is right for `pnpm test:chain`: every file gets clean state and
+# nothing outlives the run. It is the wrong shape twice over:
+#
+#   - driving the API against a fork by hand, where you want the chain to
+#     outlive one process and keep the state you set up in it;
+#   - CI, where paying the fork warm-up per test file is waste.
+#
+# Bring it up, point the suites at it, and they attach instead of
+# spawning:
+#
+#   pnpm chain:up
+#   EVM_TESTNET_RPC_URL=http://127.0.0.1:8545 pnpm test:chain
+#   pnpm chain:down
+#
+# One caveat that matters: a shared node is shared state. The suites use
+# snapshot/revert so they clean up after themselves, but two runs against
+# the same node at the same time will interleave and confuse each other.
+# One consumer at a time, or go back to per-suite containers.
+
+name: neuro-pay-chain
+
+services:
+  anvil:
+    image: ${FOUNDRY_IMAGE:-ghcr.io/foundry-rs/foundry:latest}
+    # The image's entrypoint is a shell wrapper, so passing `anvil` as an
+    # argument makes it `$0` rather than the command — anvil then starts
+    # with no flags at all and silently ignores every setting below.
+    entrypoint: ["anvil"]
+    command:
+      # Inside the container anvil must bind all interfaces, or the
+      # published port maps onto nothing.
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8545"
+      - --fork-url
+      - ${FORK_RPC_URL:?set FORK_RPC_URL (see apps/api/.env) to the network to fork}
+      # Pinning the block is what makes a fork reproducible, but it only
+      # works against an archive endpoint: the public BNB testnet
+      # endpoints prune state past roughly a thousand blocks and answer
+      # `missing trie node` for anything older. Left unset, the fork
+      # follows the head.
+      - --chain-id
+      - ${CHAIN_ID:-97}
+      # Generous, because nothing here is real and a test that fails on
+      # gas estimation teaches you nothing about the code.
+      - --gas-limit
+      - "60000000"
+      - --base-fee
+      - "0"
+    ports:
+      # Loopback only, deliberately. This node has unlocked accounts,
+      # arbitrary balance assignment, and impersonation — publishing it
+      # on 0.0.0.0 would hand all of that to anything on the network.
+      - "127.0.0.1:${CHAIN_PORT:-8545}:8545"
+    healthcheck:
+      # A successful JSON-RPC round trip is the only signal that means
+      # what it needs to mean: under Docker the port is published before
+      # the process inside is accepting, so a port check reports ready
+      # too early.
+      test:
+        - CMD
+        - cast
+        - block-number
+        - --rpc-url
+        - http://127.0.0.1:8545
+      interval: 5s
+      # A cold fork fetches state over the network on first contact, so
+      # the first check can legitimately be slow.
+      start_period: 45s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    stop_grace_period: 5s

@@ -31,6 +31,16 @@ export const WALLET_ADDRESS: Address =
 export const PERMITTED_TOKEN: Address =
   "0x55d398326f99059fF775485246999027B3197955";
 
+/**
+ * The merchant's settler EOA — the address a b402 402 publishes as
+ * `extra.spenderAddress` and the one Permit2 binds as the signed
+ * `spender`. Deliberately a third address, distinct from both the payer
+ * and `payTo`, because conflating it with `payTo` is exactly the bug
+ * these fixtures exist to keep out.
+ */
+export const SETTLER_ADDRESS: Address =
+  "0x5e771e4000000000000000000000000000005e77";
+
 /** A token the session has NOT been granted spend permission for. */
 export const UNPERMITTED_TOKEN: Address =
   "0xDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef";
@@ -95,7 +105,13 @@ export const PERMIT2_REQUIREMENT: X402Requirement = {
   description: "data feed",
   mimeType: "application/json",
   maxTimeoutSeconds: 60,
-  extra: { name: null, version: null, verifyingContract: null },
+  extra: {
+    name: null,
+    version: null,
+    verifyingContract: null,
+    spenderAddress: SETTLER_ADDRESS,
+    assetTransferMethod: "permit2-exact",
+  },
 };
 
 /**

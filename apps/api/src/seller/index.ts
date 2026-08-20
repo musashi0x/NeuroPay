@@ -22,6 +22,8 @@ import {
   type MeteringConfig,
 } from "@neuro-pay/metering";
 import {
+  recordPaymentRejected,
+  recordSegmentDelivered,
   recordStreamAbandoned,
   recordStreamEnded,
   recordStreamOpened,
@@ -92,8 +94,28 @@ export type SellerConfig = {
   chainId: number;
   token: Address;
   tokenDecimals: number;
+  /**
+   * The settler EOA that submits `permitWitnessTransferFrom`.
+   *
+   * Published in every 402 as `extra.spenderAddress` and enforced by the
+   * verifier, because Permit2 binds the signed `spender` to `msg.sender`
+   * of the settlement call. Distinct from `payTo`: the settler moves the
+   * money, `payTo` receives it.
+   */
+  settlerAddress: Address;
   /** Stream-level ceiling beyond which streams end. */
   streamTtlSeconds?: number;
+  /**
+   * Most streams that may be open at once, across all callers.
+   *
+   * The idle sweep already reclaims abandoned streams, but it runs on an
+   * interval, and a caller that opens faster than the sweep collects
+   * outruns it. This is the standing ceiling that does not depend on how
+   * fast anything is: past it, opening fails until something ends.
+   * Unset means unbounded, which is only appropriate for a local dev
+   * process.
+   */
+  maxConcurrentStreams?: number;
   maxSecondsPerSegment?: number;
   maxUnitsPerSegment?: number;
 };
@@ -128,6 +150,29 @@ export class SellerUnavailableError extends Error {
   constructor(message: string = "seller is shutting down") {
     super(message);
     this.name = "SellerUnavailableError";
+  }
+}
+
+/**
+ * Thrown when the seller already holds its maximum number of live
+ * streams.
+ *
+ * Distinct from `SellerUnavailableError` (which means "shutting down",
+ * a state that resolves by restarting elsewhere): this one resolves on
+ * its own as streams end, so the route answers 503 with `Retry-After`
+ * rather than telling the caller the service is going away.
+ */
+export class StreamCapacityError extends Error {
+  readonly live: number;
+  readonly ceiling: number;
+  constructor(live: number, ceiling: number) {
+    super(
+      `seller is at its stream ceiling (${live}/${ceiling} live). ` +
+        `Retry once an open stream ends or is swept as abandoned.`,
+    );
+    this.name = "StreamCapacityError";
+    this.live = live;
+    this.ceiling = ceiling;
   }
 }
 
@@ -327,6 +372,165 @@ export function createSeller(input: CreateSellerInput): Seller {
   }
 
   /**
+   * Deliver a segment that nothing is owed for yet.
+   *
+   * The unpaid path is deliberately thinner than the paid one, and each
+   * omission is a consequence of there being no payment rather than a
+   * shortcut:
+   *
+   *  - **No idempotency record.** Idempotency is keyed by the
+   *    authorization nonce, and an unpaid request has none. It also has
+   *    nothing to protect: replay exists so a buyer cannot be charged
+   *    twice for one nonce, and nobody was charged here.
+   *  - **No settlement.** There is no authorization to settle.
+   *  - **No exposure slot.** Exposure bounds in-flight settlements. The
+   *    credit extended here is bounded instead by
+   *    `settlementThreshold` — once the accrual reaches it the policy
+   *    demands payment and this path stops being taken.
+   *
+   * The ledger entry is still written, with a null nonce and a zero
+   * amount. Without it the demand that eventually fires would be
+   * unreconcilable against the segments that produced it.
+   */
+  function deliverOnCredit(
+    streamId: string,
+    record: StreamRecord,
+    clock: Clock,
+  ): SellerOutcome {
+    const produced = produceSegment(streamId, record);
+    if (produced === null) {
+      return {
+        kind: "not-found",
+        status: 404,
+        reason: "stream ended before segment request",
+      };
+    }
+
+    const nextMeter = streams.recordDelivery(
+      streamId,
+      {
+        secondsDelivered: produced.secondsDelivered,
+        unitsDelivered: produced.unitsDelivered,
+      },
+      clock,
+    );
+    if (!nextMeter) {
+      return { kind: "not-found", status: 404, reason: "stream ended" };
+    }
+
+    const segment = {
+      streamId,
+      sequence: produced.sequence,
+      data: produced.data,
+      secondsDelivered: produced.secondsDelivered,
+      unitsDelivered: produced.unitsDelivered,
+      accruedUnpaid: nextMeter.accruedUnpaid,
+      totalAccrued: nextMeter.totalAccrued,
+      streamEnded: false,
+      endReason: null as StreamEndReason | null,
+    };
+
+    void recordSegmentDelivered({
+      store: input.store,
+      ctx: streamCtx(streamId),
+      amount: 0n as SmallestUnits,
+      nonce: null,
+      secondsDelivered: produced.secondsDelivered,
+      unitsDelivered: produced.unitsDelivered,
+      detail: `segment delivered on credit: ${produced.secondsDelivered}s, ${produced.unitsDelivered}u (accrued ${nextMeter.accruedUnpaid})`,
+    }).catch((err: unknown) => {
+      logger.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          streamId,
+          sequence: produced.sequence,
+        },
+        "failed to record segment.delivered for an unpaid segment",
+      );
+    });
+
+    return { kind: "delivered", status: 200, body: segment };
+  }
+
+  /**
+   * Take the next sequence number and produce its segment, clamped to
+   * the configured per-segment ceilings. Returns `null` when the stream
+   * ended between the request arriving and the sequence being taken.
+   *
+   * Shared by the paid and unpaid paths so the two cannot drift on what
+   * a segment is or how it is bounded.
+   */
+  function produceSegment(
+    streamId: string,
+    record: StreamRecord,
+  ): {
+    sequence: number;
+    data: string;
+    secondsDelivered: number;
+    unitsDelivered: number;
+  } | null {
+    const sequence = streams.nextSequence(streamId);
+    if (sequence === null) return null;
+    const maxSeconds = input.config.maxSecondsPerSegment ?? 60;
+    const maxUnits = input.config.maxUnitsPerSegment ?? 1000;
+    const produced = record.segmentProducer({
+      streamId,
+      sequence,
+      maxSeconds,
+      maxUnits,
+    });
+    return {
+      sequence,
+      data: produced.data,
+      secondsDelivered: Math.max(
+        0,
+        Math.min(produced.secondsDelivered, maxSeconds),
+      ),
+      unitsDelivered: Math.max(0, Math.min(produced.unitsDelivered, maxUnits)),
+    };
+  }
+
+  /**
+   * Write the `payment.rejected` audit entry for a refused envelope.
+   *
+   * Every 402 the seller returns for a *reason* lands here. Without it
+   * the ledger cannot tell "the buyer never paid" from "the buyer paid
+   * and we refused, because the permit named the wrong spender". The
+   * classifications exist precisely so an operator never has to guess,
+   * and they were being computed and then thrown away.
+   *
+   * Fire-and-forget, like `noteClosed`: a ledger write that fails must
+   * not turn a well-classified 402 into a 500. The rejection is the
+   * answer to the buyer; the entry is the record for the operator, and
+   * losing the record is the lesser failure.
+   */
+  function noteRejected(rejection: {
+    streamId: string;
+    classification: PaymentFailureClassification;
+    detail: string;
+    nonce: string | null;
+    amount: SmallestUnits | null;
+  }): void {
+    void recordPaymentRejected({
+      store: input.store,
+      ctx: streamCtx(rejection.streamId),
+      amount: rejection.amount,
+      nonce: rejection.nonce,
+      classification: rejection.classification,
+      detail: rejection.detail,
+    }).catch((err: unknown) => {
+      logger.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          streamId: rejection.streamId,
+          classification: rejection.classification,
+        },
+        "failed to record payment.rejected",
+      );
+    });
+  }
+
+  /**
    * Close every active stream on a price change (5.10). The price
    * registry stays the same reference; the streams each receive an end
    * signal at the next segment read.
@@ -380,6 +584,16 @@ export function createSeller(input: CreateSellerInput): Seller {
   const seller: Seller = {
     openStream({ requestUrl, clock: callerClock }) {
       if (!accepting) throw new SellerUnavailableError();
+      const ceiling = input.config.maxConcurrentStreams;
+      if (ceiling !== undefined) {
+        // Count only live streams: an ended or abandoned record still
+        // sits in the store for replay lookups and must not consume a
+        // slot it is no longer using.
+        const live = streams.list().filter((r) => r.endReason === null).length;
+        if (live >= ceiling) {
+          throw new StreamCapacityError(live, ceiling);
+        }
+      }
       const useClock = callerClock ?? clock;
       const openOptions = {
         priceSheet: priceRegistry.current,
@@ -429,6 +643,15 @@ export function createSeller(input: CreateSellerInput): Seller {
         };
       }
       if (record.endReason === "session-revoked") {
+        // Refused before the envelope is read at all, so there is no
+        // nonce and no authorized amount to record.
+        noteRejected({
+          streamId,
+          classification: "session-revoked",
+          detail: "session revoked",
+          nonce: null,
+          amount: null,
+        });
         return {
           kind: "rejected",
           status: 402,
@@ -467,9 +690,19 @@ export function createSeller(input: CreateSellerInput): Seller {
             input.config.metering,
             useClock,
           );
-          const demand = decision.demand;
+          // Threshold-or-tick: the seller delivers on credit until
+          // `accruedUnpaid` reaches the threshold or the tick elapses.
+          // A zero demand means nothing is owed *yet*, so answering 402
+          // here would ask the buyer to sign for nothing — one wasted
+          // signature and one zero-value settlement per segment, which
+          // is precisely the per-unit settlement cost the design exists
+          // to avoid. Deliver instead, and let the accrual bring the
+          // demand around.
+          if (decision.demand === 0n) {
+            return deliverOnCredit(streamId, record, useClock);
+          }
           const body = buildPaymentRequired(
-            requirementsFor(req.requestUrl, record.priceSheet, demand),
+            requirementsFor(req.requestUrl, record.priceSheet, decision.demand),
           );
           return {
             kind: "payment-required",
@@ -478,17 +711,26 @@ export function createSeller(input: CreateSellerInput): Seller {
             resource: req.requestUrl,
           };
         }
+        // A malformed envelope has no parsable nonce by definition;
+        // the error kind is the whole diagnostic.
+        const detail = `envelope error: ${envelope.error.kind}`;
+        noteRejected({
+          streamId,
+          classification: "verification-failed",
+          detail,
+          nonce: null,
+          amount: null,
+        });
         return {
           kind: "rejected",
           status: 402,
           classification: "verification-failed",
-          detail: `envelope error: ${envelope.error.kind}`,
+          detail,
           resource: req.requestUrl,
         };
       }
 
       const parsed = envelope.envelope;
-      const witnessAmount = readAuthorizedAmount(parsed.witness);
       const demandAmount = readDemandAmount(
         record.meter,
         input.config.metering,
@@ -498,16 +740,29 @@ export function createSeller(input: CreateSellerInput): Seller {
       const verification = await verifyEnvelope(
         {
           envelope: parsed,
-          demandedAmount: witnessAmount ?? demandAmount,
+          demandedAmount: demandAmount,
           expectedPayTo: input.config.payTo,
           expectedToken: input.config.token,
           expectedChainId: input.config.chainId,
+          expectedSpender: input.config.settlerAddress,
           paymentRequired,
         },
         input.verifier,
         useClock,
       );
       if (verification.kind === "fail") {
+        // The envelope parsed, so the nonce is real and this entry joins
+        // the buyer's other events under `lookupByNonce`. The amount
+        // recorded is what the seller demanded, which is the number an
+        // operator reading an `amount-underpaid` needs to compare
+        // against.
+        noteRejected({
+          streamId,
+          classification: verification.classification,
+          detail: verification.detail,
+          nonce: parsed.nonce,
+          amount: demandAmount,
+        });
         return {
           kind: "rejected",
           status: 402,
@@ -523,7 +778,7 @@ export function createSeller(input: CreateSellerInput): Seller {
         return {
           kind: "delivered",
           status: 200,
-          body: buildReplayResponse(parsed.nonce!, replay.record),
+          body: buildReplayResponse(parsed.nonce, replay.record),
         };
       }
       if (replay.kind === "incomplete") {
@@ -548,8 +803,8 @@ export function createSeller(input: CreateSellerInput): Seller {
         };
       }
 
-      const sequence = streams.nextSequence(streamId);
-      if (sequence === null) {
+      const produced = produceSegment(streamId, record);
+      if (produced === null) {
         exposure.release();
         return {
           kind: "not-found",
@@ -557,27 +812,7 @@ export function createSeller(input: CreateSellerInput): Seller {
           reason: "stream ended before segment request",
         };
       }
-
-      const produced = record.segmentProducer({
-        streamId: streamId,
-        sequence,
-        maxSeconds: input.config.maxSecondsPerSegment ?? 60,
-        maxUnits: input.config.maxUnitsPerSegment ?? 1000,
-      });
-      const secondsDelivered = Math.max(
-        0,
-        Math.min(
-          produced.secondsDelivered,
-          input.config.maxSecondsPerSegment ?? 60,
-        ),
-      );
-      const unitsDelivered = Math.max(
-        0,
-        Math.min(
-          produced.unitsDelivered,
-          input.config.maxUnitsPerSegment ?? 1000,
-        ),
-      );
+      const { sequence, secondsDelivered, unitsDelivered } = produced;
 
       // Record the verification + delivery. The verification call writes
       // `payment.verified` first; then `recordSegmentDelivery` writes the
@@ -586,7 +821,7 @@ export function createSeller(input: CreateSellerInput): Seller {
         {
           store: input.store,
           index: idempotency,
-          nonce: parsed.nonce!,
+          nonce: parsed.nonce,
           streamId: streamId,
           sessionPublicKey: null,
           chainId: input.config.chainId,
@@ -606,7 +841,7 @@ export function createSeller(input: CreateSellerInput): Seller {
         return {
           kind: "delivered",
           status: 200,
-          body: buildReplayResponse(parsed.nonce!, verificationResult.record),
+          body: buildReplayResponse(parsed.nonce, verificationResult.record),
         };
       }
 
@@ -636,7 +871,7 @@ export function createSeller(input: CreateSellerInput): Seller {
       await recordSegmentDelivery({
         store: input.store,
         index: idempotency,
-        nonce: parsed.nonce!,
+        nonce: parsed.nonce,
         segment,
         sessionPublicKey: null,
         chainId: input.config.chainId,
@@ -649,7 +884,7 @@ export function createSeller(input: CreateSellerInput): Seller {
       // Exposure is released only on confirmation (via settlement hooks).
       // Failed or lost settlements keep the slot as unrecovered exposure.
       const settlementInput: SettlementInput = {
-        nonce: parsed.nonce!,
+        nonce: parsed.nonce,
         streamId,
         sessionPublicKey: null,
         chainId: input.config.chainId,
@@ -658,6 +893,15 @@ export function createSeller(input: CreateSellerInput): Seller {
         amount: verification.authorized.amount,
         payer: parsed.from,
         payTo: input.config.payTo,
+        deadline: parsed.permit.deadline,
+        // The buyer's signed data, verbatim. Permit2 rebuilds the digest
+        // from these at settlement time, so they travel intact from the
+        // envelope through the outbox to the chain settler.
+        authorization: {
+          signature: parsed.signature,
+          spender: parsed.permit.spender,
+          witness: parsed.permit.witness!,
+        },
       };
       // Persist the intent before returning 200 so a crash cannot lose
       // the work between delivery and submitSettle.
@@ -693,8 +937,29 @@ export function createSeller(input: CreateSellerInput): Seller {
         ...(input.randomId ? { randomId: input.randomId } : {}),
         ...(input.now ? { now: input.now } : {}),
       };
+      const previous = priceRegistry.current;
       bumpPriceSheet(priceRegistry, draft, bumpOptions);
       const ended = closeActiveStreamsOnPriceChange();
+      // A price change ends every open stream, so it is an operator
+      // action with a blast radius, not a config tweak. The ledger
+      // records the resulting `stream.ended` entries; this records the
+      // decision that caused them.
+      void input.store
+        .appendAudit({
+          action: "prices.updated",
+          actor: "operator",
+          outcome: "succeeded",
+          subject: `version:${previous.version}->${priceRegistry.current.version}`,
+          detail:
+            `perCall=${draft.perCall} perSecond=${draft.perSecond} ` +
+            `perUnit=${draft.perUnit} unit=${draft.unitName} ` +
+            `endedStreams=${ended.length}`,
+        })
+        .catch(() => {
+          // The price change itself has already happened and is durable
+          // in the streams it ended; a failed audit write must not undo
+          // it or throw into the caller.
+        });
       return { ended };
     },
 
@@ -787,6 +1052,17 @@ export function createSeller(input: CreateSellerInput): Seller {
       tokenDecimals: sheet.tokenDecimals,
       payTo: input.config.payTo,
       description: descriptionForPriceSheet(sheet),
+      // A buyer cannot produce a settleable Permit2 signature without
+      // knowing which address will call `permitWitnessTransferFrom`, and
+      // it is not derivable from anything else in the 402 — so it is
+      // published here.
+      extra: {
+        name: null,
+        version: null,
+        verifyingContract: null,
+        spenderAddress: input.config.settlerAddress,
+        assetTransferMethod: "permit2-exact",
+      },
     };
   }
 
@@ -808,21 +1084,6 @@ export function createSeller(input: CreateSellerInput): Seller {
 }
 
 /* ------- internal helpers shared by the public surface ------- */
-
-function readAuthorizedAmount(witness: unknown): SmallestUnits | null {
-  if (typeof witness !== "object" || witness === null) return null;
-  const w = witness as Record<string, unknown>;
-  const a = w.amount;
-  if (typeof a === "bigint") return a;
-  if (typeof a === "string") {
-    try {
-      return BigInt(a) as SmallestUnits;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
 
 function readDemandAmount(
   meter: import("@neuro-pay/metering").MeterState,

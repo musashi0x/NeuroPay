@@ -99,12 +99,14 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
           "accrued amount that triggers a payment demand, in smallest token units",
       }),
       tickIntervalSeconds: readInteger(env, "TICK_INTERVAL_SECONDS", {
-        purpose: "seconds since the last payment that trigger a demand regardless of accrual",
+        purpose:
+          "seconds since the last payment that trigger a demand regardless of accrual",
         fallback: DEFAULT_TICK_INTERVAL_SECONDS,
         min: 1,
       }),
       maxInFlightSettlements: readInteger(env, "MAX_IN_FLIGHT_SETTLEMENTS", {
-        purpose: "concurrent settlements the seller will carry before stopping delivery",
+        purpose:
+          "concurrent settlements the seller will carry before stopping delivery",
         fallback: DEFAULT_MAX_IN_FLIGHT_SETTLEMENTS,
         min: 1,
       }),

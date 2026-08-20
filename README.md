@@ -109,19 +109,29 @@ actual settlement — follow the
 
 The repository is mid-build. What the running app does and does not do:
 
-| Area                                               | State                                                                                                            |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                 |
-| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)    |
-| Signature verification                             | Production runtime uses ERC-1271 via Permit2; tests inject a stub verifier                                       |
-| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory                         |
-| On-chain revoke                                    | Wired when `ADMIN_PRIVATE_KEY` + `RPC_URL` are set; local-only with a logged warning otherwise                   |
-| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot |
+| Area                                               | State                                                                                                                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                                                                                                                        |
+| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)                                                                                                           |
+| Signature verification                             | Production runtime uses ERC-1271 via Permit2. The seller recomputes the EIP-712 digest itself — the wire carries no hash — so a wrong-chain payment fails the signature check rather than a field compare               |
+| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory. The settler EOA is published in every 402 as `extra.spenderAddress`, because Permit2 binds the signed spender to `msg.sender` |
+| On-chain revoke                                    | Wired when `ADMIN_PRIVATE_KEY` + `RPC_URL` are set; local-only with a logged warning otherwise                                                                                                                          |
+| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot                                                                                                        |
 
 Confirmed settlements now credit the meter, so a 402 after a successful
 settle demands only newly accrued unpaid cost. Failed settlements do not
 credit the meter and keep the exposure slot reserved until operator
 retry (P1) or process restart.
+
+**Three addresses, not two.** A Permit2 payment involves the payer (the
+buyer's smart account), the recipient (`payTo`, bound inside the signed
+witness), and the _spender_ — the settler EOA that calls
+`permitWitnessTransferFrom`. Permit2 checks the signed spender against
+that call's `msg.sender`, so the seller publishes its settler address in
+the 402 and refuses any permit signed for a different one. Running
+without `SETTLER_PRIVATE_KEY` advertises `payTo` as the spender, which is
+fine for the in-memory local loop and produces signatures that are **not**
+settleable on chain.
 
 One naming inconsistency: the product copy says USDC, while
 `.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
@@ -238,6 +248,24 @@ or settlement works. The witness fields (payTo, token, chainId, amount,
 deadline) are filled honestly, because the seller checks each one before
 the verifier ever runs.
 
+> **Pin `SESSION_STORE_PATH` when provisioning.** The script resolves it
+> relative to _its own_ working directory, so running it through
+> `pnpm --filter @neuro-pay/altana` writes the record under
+> `packages/altana/` while the API reads it from `apps/api/.data/`. The
+> grant lands on chain either way and the console then answers 404 for a
+> session that demonstrably exists, which is a confusing thing to debug.
+> Pass an absolute path:
+>
+> ```bash
+> SESSION_STORE_PATH=$PWD/apps/api/.data/session.json \
+>   pnpm --filter @neuro-pay/altana provision
+> ```
+>
+> A revoked session key stays **registered** in the keystore, so a later
+> grant with the same `SESSION_PRIVATE_KEY` fails with
+> `KeyStore: key already registered`. Replacing a session means a new
+> key, not a re-grant.
+
 ### Signed payments (`pnpm demo:real`)
 
 `apps/api/scripts/demo-real-signing.ts` is the buyer that actually signs.
@@ -272,9 +300,10 @@ on-chain fees.
 
 `/v1/session`'s `status` field is also chain-backed whenever `RPC_URL` is
 set: it reads a live Keystore `isValidKey` check rather than only expiry
-+ the local rail flag, so a session revoked from outside this process
-(another operator run, a different revoke call) shows up as `"revoked"`
-on the next poll.
+
+- the local rail flag, so a session revoked from outside this process
+  (another operator run, a different revoke call) shows up as `"revoked"`
+  on the next poll.
 
 For console work, seed a fake record instead:
 
@@ -314,10 +343,10 @@ The chain config is only needed to exercise payments end to end. Without it, `tr
 
 To mount the payment routes, fill these in `apps/api/.env` (the rest already default to BNB testnet):
 
-| Variable              | Why                                                                     |
-| --------------------- | ----------------------------------------------------------------------- |
-| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                  |
-| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas |
+| Variable              | Why                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                                                       |
+| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas                                      |
 | `ADMIN_PRIVATE_KEY`   | Wallet creation, `grantSession`, rail provisioning (provisioner script), and on-chain revoke (API, optional) |
 
 Use throwaway testnet-only keys. A leaked session key is bounded by the cap and expiry; a leaked admin key is total loss of the wallet. Then follow the [operator checklist](#operator-checklist-chain-97).
@@ -371,15 +400,82 @@ The agent pays for metered work with an Altana session key. A human approves a p
 
    The script prints the smart-account address to fund and every transaction hash. Fund that address from the [BNB testnet faucet](https://www.bnbchain.org/en/testnet-faucet) **before** the grant if the wallet is new.
 
-7. `grantSession` writes to Keystore and costs a fee. The wallet's **first admin action is charged twice** because `initialRegisterKey` rides in the same userOp. Record both the funding hash and the grant hash; the double charge is expected.
-8. Session persistence is byte-exact. The store re-encodes on load and **hard-fails** on mismatch. Do not hand-edit `.data/session.json`. A sloppy JSON round-trip (bigint → number, reordered keys) grants cleanly and then fails every payment.
-9. Start the API and the console:
+7. `grantSession` writes to Keystore and costs a fee. A fresh wallet's first admin action is expected to carry a one-time `initialRegisterKey` cost in the same userOp, so budget for the grant costing more than a steady-state one.
+
+   The measured chain-97 figures so far are grant 968,320 gas, approve-token 127,361, approve-checker 115,737. Those do **not** establish the "charged twice" claim — a grant writes a session key, its spend caps, and its allowlist, while an approve flips one storage slot, so the gap is mostly the grant doing more work. `pnpm --filter @neuro-pay/altana probe:fee` runs the experiment that can settle it (two grants on one fresh wallet, first-ness the only variable). Until it has been run, treat the doubling as unverified.
+
+8. Every operator script records its transaction hashes to the on-chain runbook, so a hash outlives the terminal it was printed in:
 
    ```bash
-   pnpm dev
+   pnpm --filter @neuro-pay/altana runbook
    ```
 
-   Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
+   Backfill anything sent outside the tooling — the faucet funding, most obviously — with `runbook --add <action> <wallet> <txHash>`; gas and block are read from the chain, not typed in.
+
+9. Revoking is the kill switch, and it has its own command:
+
+   ```bash
+   pnpm --filter @neuro-pay/altana revoke -- --dry-run   # read-only: prints current on-chain authority
+   pnpm --filter @neuro-pay/altana revoke -- --yes       # irreversible
+   ```
+
+   It reads authority before, revokes locally then on chain, reads authority after, and records the hash. The after-read is the point: submitting a transaction is not the same claim as the session being dead on chain. Note that an **already-expired** session reads `expired` either way, so the verification is only conclusive while the session is live.
+
+10. Session persistence is byte-exact. The store re-encodes on load and **hard-fails** on mismatch. Do not hand-edit `.data/session.json`. A sloppy JSON round-trip (bigint → number, reordered keys) grants cleanly and then fails every payment.
+11. Start the API and the console:
+
+```bash
+pnpm dev
+```
+
+Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
+
+### Securing the console
+
+Every console route — session policy, payment history, and the revoke
+kill switch — requires an operator bearer token. Generate one and set it
+on **both** the API and the web app:
+
+```bash
+openssl rand -hex 32
+```
+
+```
+apps/api/.env       CONSOLE_API_TOKEN=<token>
+apps/web/.env.local CONSOLE_API_TOKEN=<token>   # same value, server-side only
+```
+
+Leaving it unset keeps the console open and logs a warning at boot.
+That is fine on a local box and never fine in a deployment: anyone who
+can reach the port can read your payment history and revoke the session.
+A token under 32 characters is refused outright rather than accepted
+weakly.
+
+`CONSOLE_API_TOKEN` must never be `NEXT_PUBLIC_`-prefixed. Next inlines
+those into client JavaScript, which would publish the kill switch to
+every visitor. The browser never holds it: the console talks to a
+same-origin proxy at `/api/console/*` that adds the header server-side
+and forwards only an allowlist of console paths.
+
+The **buyer** routes (`POST /v1/streams`, `GET /v1/streams/:id/next`)
+are deliberately unauthenticated. A buyer proves itself by paying, which
+is a stronger claim than a shared secret, and requiring a token there
+would break every third-party b402 client. They are bounded by abuse
+controls instead:
+
+| Control                 | Default            | Env                      |
+| ----------------------- | ------------------ | ------------------------ |
+| Stream creation rate    | 30/min per caller  | —                        |
+| Segment request rate    | 600/min per caller | —                        |
+| Concurrent live streams | unbounded          | `MAX_CONCURRENT_STREAMS` |
+
+Rate and concurrency are different bounds and you want both: a burst
+trips the rate limit without holding many streams, and a slow, patient
+opener never trips it but still accumulates. Over either limit the API
+answers 429 or 503 with `Retry-After`.
+
+Behind more than one replica these limits are per-replica. A real
+deployment wants a shared store or an edge limiter.
 
 ### What is bounded, and what is not
 
@@ -415,3 +511,180 @@ To override the log level:
 ```bash
 LOG_LEVEL=debug pnpm --filter @neuro-pay/api dev
 ```
+
+## Health, metrics, and the audit trail
+
+`GET /health` answers "is this process running" and always has. It is
+what a supervisor restarts on, and it is nearly useless for the question
+an operator actually has, which is "can this process settle a payment
+right now" — a process with an unreachable RPC, a Permit2 address with no
+code behind it, or a settler with no gas is alive and completely unable
+to do its job.
+
+So readiness is a separate surface with a probe per dependency:
+
+| Route                               | Auth           | What it answers                                          |
+| ----------------------------------- | -------------- | -------------------------------------------------------- |
+| `GET /health`                       | none           | Liveness. Always `ok` while the process runs.            |
+| `GET /ready`                        | none           | Readiness. Check names and verdicts only. 503 when down. |
+| `GET /v1/health`                    | operator token | The same report with probe messages and firing alerts.   |
+| `GET /metrics`                      | operator token | Prometheus exposition.                                   |
+| `GET /v1/metrics`                   | operator token | The same numbers as JSON.                                |
+| `GET /v1/audit`                     | operator token | Administrative audit trail.                              |
+| `POST /v1/settlements/:nonce/retry` | operator token | Resubmit a failed settlement.                            |
+
+`/ready` is the only open one, and it publishes strictly the shape of the
+answer — which dependencies exist and whether each is healthy. That is
+what a scheduler needs and is already inferable from the service being
+reachable. The diagnosis (which RPC, which token contract, which settler
+address, and why each probe is unhappy) stays behind the token.
+
+The probes check the _claims configuration makes_, not merely that a call
+returned: the RPC answers **and it is the configured chain**; the token's
+`decimals()` answers **and it matches config**; Permit2 has code at the
+canonical address. The difference is a whole class of misconfiguration
+that otherwise surfaces as an unexplained revert after a segment has
+already been delivered.
+
+Verdicts are `ok`, `degraded`, `down`, or `skipped`. A dependency that is
+not wired in this environment reports `skipped` with the reason rather
+than being omitted — a missing line in a health report reads as "fine",
+and an unconfigured settler is not fine in production. `degraded` answers
+200 on purpose: a settler under its balance floor settles fine until it
+does not, and pulling a working instance out of rotation over a warning
+is worse than leaving it in.
+
+### Metrics are derived, not counted
+
+Nothing is an in-process counter. Every number is recomputed from the
+append-only ledger on read, which is what makes the numbers survive a
+restart, agree across two processes reading the same file, and stay
+correct after a crash. A metric you can only get by having been running
+the whole time is a metric that lies after the first deploy.
+
+Covered: payment verification outcomes and failure classifications;
+settlement counts by state; submitted-to-confirmed latency quantiles;
+unrecovered failed settlements; exposure saturation; budget headroom and
+exhaustion; session status and remaining lifetime; settler balance;
+ledger schema version.
+
+Alerts are derived the same way — recomputed on read from those metrics
+plus live process state, so they cannot go stale and need no delivery
+machinery to be correct. Thresholds are tunable; see
+`apps/api/.env.example`. Wiring them to a pager is a matter of scraping
+the endpoint.
+
+### The audit trail
+
+`GET /v1/audit` reads a second append-only table in the ledger file
+recording administrative actions: who invoked the kill switch, when a
+price sheet changed, what configuration the process booted with, every
+settlement retry. Each record carries an actor, an outcome, and the HTTP
+request id, which ties it to the access log line with the source and
+timing.
+
+It is separate from the payment ledger because every ledger row carries a
+chain, a token, and decimals — every row is a fact about money — and "an
+operator revoked the session at 14:02" has none of those. It keeps the
+same guarantees: append-only, independently ordered, and refused outright
+if a write carries key material.
+
+### Operator procedures
+
+- Settlement reconciliation, retry, and the alert playbook:
+  [`docs/runbooks/settlement-reconciliation.md`](docs/runbooks/settlement-reconciliation.md)
+- Ledger backup, restore, corruption recovery, retention, and schema
+  versioning: [`packages/ledger/README.md`](packages/ledger/README.md)
+
+## Local EVM integration tests
+
+Some things can only be verified against a real EVM. `pnpm test` runs
+against stubs and asserts what the code _passes_; a settlement asserts
+what Permit2 _accepts_, and those are different claims. The P0
+wire-format defects — an empty signature, a witness hash invented from
+the nonce, a malformed type string — were all invisible to unit tests
+and all produced unconditional on-chain reverts.
+
+`@neuro-pay/evm-testnet` forks BNB testnet locally so those claims can be
+checked. It is a separate command because each suite boots a chain and
+needs network:
+
+```bash
+FORK_RPC_URL=https://data-seed-prebsc-1-s1.bnbchain.org:8545 pnpm test:chain
+```
+
+Needs foundry (`brew install foundry`) or a running Docker daemon — the
+launcher detects either, preferring the native binary. With neither, the
+suites **skip with a reason** rather than failing, so a fresh clone still
+builds green. That also means a green `pnpm test` says nothing about the
+chain suites; `pnpm test:chain` has to be run on purpose.
+
+### Why fork rather than deploy to a blank chain
+
+Altana's smart account and session keystore are consumed through
+`@altananetwork/sdk`; this repo has neither their source nor their
+bytecode, so there is nothing to deploy. A fork puts every contract at
+its real address, including Permit2 and the real ERC-20 with its real
+`decimals()`.
+
+### What a fork can and cannot prove
+
+**Forkable** — anything that is an `eth_call` or a transaction this
+process signs and sends: Permit2's deployment and
+`permitWitnessTransferFrom`, the token's decimals and transfers, the
+keystore's `isValidKey` authority read.
+
+**Not forkable** — `grantSession`, `revokeSession`, `provisionWallet`,
+`provisionRail`. These do not go through the configured RPC at all: the
+SDK submits them to **Altana's hosted relay**, which broadcasts to the
+real network. Pointing `rpcUrl` at a fork changes where reads go and has
+no effect on where the relay writes. That half can only ever be verified
+against chain 97, which is why it stays on the P1 list.
+
+### What this closed
+
+`apps/api/src/seller/settlement.chain.test.ts` settles a real signed
+permit through real Permit2 and asserts the tokens moved — the first
+end-to-end proof that the P0 wire-format work produces a settlement the
+contract accepts. It also pins the failure modes: a replayed nonce, a
+signature bound to the wrong spender, and a tampered witness.
+
+Two findings worth knowing before writing more of these:
+
+- **The payment token had to be replaced.** The BSC testnet USDT the
+  config named is owner-gated by a third party — `mint` reverts for
+  every key here — and the official faucet gates claims behind mainnet
+  BNB and a once-per-day web form. Funding a test wallet was a manual
+  errand, which is a poor foundation for a loop meant to be repeatable.
+  The project now deploys its own token
+  (`packages/evm-testnet/contracts/NeuroPayTestUSD.sol`, `npUSD`, 18
+  decimals) with an **open mint**, so funding is a function call. The
+  contract refuses to deploy on a production chain id, so a free mint
+  cannot land where it would be mistaken for value.
+- **Anvil's dev accounts are not clean EOAs on BNB testnet.** Somebody
+  has EIP-7702-delegated those well-known keys, so Permit2 sees code at
+  the address, skips `ecrecover`, and calls ERC-1271 on the delegate —
+  failing with an empty revert that explains nothing. Clear it with
+  `cheats.setCode(addr, "0x")`.
+
+### The test payment token
+
+```bash
+# rehearse against a fork — deploys, mints, reads back, broadcasts nothing
+pnpm --filter @neuro-pay/evm-testnet deploy:token -- --dry-run
+
+# broadcast for real to RPC_URL
+pnpm --filter @neuro-pay/evm-testnet deploy:token -- --yes
+
+# allow Permit2 to pull the token (needed whenever TOKEN_ADDRESS changes)
+pnpm --filter @neuro-pay/evm-testnet approve:permit2 -- --yes
+```
+
+`--dry-run` is the default posture: `--yes` is the only thing that sends
+a transaction, and the private key signs in-process rather than being
+passed to a container where `docker inspect` would expose it. Foundry is
+used to compile only; the artifact is committed so deploying needs no
+Solidity toolchain.
+
+Details, cheat-code reference, and the determinism caveats:
+[`packages/evm-testnet/README.md`](packages/evm-testnet/README.md).

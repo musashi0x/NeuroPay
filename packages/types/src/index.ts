@@ -29,6 +29,7 @@ export type {
   StreamView,
 } from "./stream.js";
 export type {
+  X402AssetTransferMethod,
   X402Extra,
   X402PaymentRequired,
   X402Rail,
@@ -39,6 +40,7 @@ export type {
   LedgerEventType,
   PaymentFailureClassification,
 } from "./ledger.js";
+export type { AuditAction, AuditEvent, AuditOutcome } from "./audit.js";
 export type {
   RevokeResult,
   SessionCallPermission,

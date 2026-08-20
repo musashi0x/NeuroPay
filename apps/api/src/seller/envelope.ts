@@ -1,22 +1,55 @@
 /**
  * Envelope parsing (5.5).
  *
- * Accept either header (`X-PAYMENT` or `PAYMENT-SIGNATURE`) and either
- * Permit2 dialect: the seller supports b402's two sibling shapes, which
- * have the same witness binding but differ in which key carries the
- * payload.
+ * Accept either header (`X-PAYMENT` or `PAYMENT-SIGNATURE`) and normalize
+ * the b402 payload into one typed Permit2 authorization the rest of the
+ * seller can deal with.
  *
- * `X-PAYMENT` and `PAYMENT-SIGNATURE` carry the same base64url-encoded
- * JSON envelope — the b402 dialect puts the envelope next to `permit`
- * and `from`, while the older Coinbase dialect wraps it under
- * `permit2Authorization`. The verifier calls `isValidSignature` against
- * either, so the parser here normalizes both to a single shape the
- * rest of the seller can deal with.
+ * ## The wire shape this parses
+ *
+ * `@altananetwork/sdk`'s `signX402Payment` (permit2-exact rail) base64s
+ * this JSON into both headers:
+ *
+ * ```jsonc
+ * {
+ *   "x402Version": 1, "scheme": "exact", "network": "eip155:97",
+ *   "accepted": { … }, "resource": { "url": "…" },
+ *   "payload": {
+ *     "signature": "0x…",       // 98-byte nested ERC-1271 envelope
+ *     "from": "0x…",            // the payer
+ *     "permit": {
+ *       "permitted": { "token": "0x…", "amount": "1000" },
+ *       "spender": "0x…",       // must equal msg.sender at settle time
+ *       "nonce": "…", "deadline": "…",
+ *       "witness": { "to": "0x…", "validAfter": "0" }
+ *     },
+ *     "permit2Authorization": { …same, plus "from" }
+ *   }
+ * }
+ * ```
+ *
+ * Three things are conspicuously absent and drive the design here:
+ *
+ *  - **No EIP-712 digest.** The buyer never transmits the hash it signed,
+ *    so the verifier recomputes it (see `verify.ts`). This parser does not
+ *    read, and must never read, a wire-supplied `hash`.
+ *  - **No `chainId`.** The chain is bound implicitly through the EIP-712
+ *    domain the signature covers, so it cannot be compared as a field.
+ *  - **No flat witness.** `token` and `amount` live under
+ *    `permit.permitted`, and the recipient is `witness.to`.
+ *
+ * The `payload.*` nesting is canonical; the same keys are also accepted at
+ * the envelope root so a non-SDK buyer that flattens them still parses.
  */
 
 import { Buffer } from "node:buffer";
 
-import type { Address, Hex, X402PaymentRequired } from "@neuro-pay/types";
+import type {
+  Address,
+  Hex,
+  SmallestUnits,
+  X402PaymentRequired,
+} from "@neuro-pay/types";
 
 /** The header names we accept (case-insensitive at the HTTP layer). */
 export const HEADER_NAMES = ["x-payment", "payment-signature"] as const;
@@ -24,52 +57,59 @@ export const HEADER_NAMES = ["x-payment", "payment-signature"] as const;
 export type EnvelopeHeader = (typeof HEADER_NAMES)[number];
 
 /**
- * A base64url-encoded string. We don't decode in here; the verifier does,
- * so a malformed envelope is rejected at the parsing layer with a
- * distinct error from "valid base64 but wrong signature".
+ * A base64 (or base64url) encoded string. Node decodes either alphabet
+ * with the same call, so the two dialects need no branch here.
  */
 export type Base64Url = string;
 
 /**
- * The shape of the b402 sibling-shape authorization.
- *
- * Nested alongside `permit` and `from`, this is the canonical b402 dialect.
+ * The B402 witness struct: `Witness(address to,uint256 validAfter)`, taken
+ * verbatim from the x402ExactPermit2Proxy's bytecode. `validAfter` stays a
+ * decimal string because it is a uint256 on the wire and is re-encoded as
+ * one when the settler hashes the struct.
  */
-export type Permit2Authorization = {
-  /** The smart-account / EOA paying for the segment. */
-  from: Address;
-  /** Permit2 authorization payload — typed-data hash + witness + signature. */
-  permit: {
-    /** The hash the buyer signed (EIP-712 digest). */
-    hash: Hex;
-    /** The witness payload bound to the permit (carries payTo + amount). */
-    witness: unknown;
-    /** The signature bytes (98-byte ERC-1271 envelope on a smart account). */
-    signature: Hex;
-  };
-  /** Optional sibling Permit2Authorization (newer b402 dialects). */
-  permit2Authorization?: unknown;
+export type Permit2Witness = {
+  to: Address;
+  validAfter: string;
 };
 
 /**
- * The normalized envelope shape the verifier consumes. Carries the raw
- * header bytes (so the verifier can hand them straight to `isValidSignature`)
- * along with the parsed fields.
+ * The Permit2 `PermitWitnessTransferFrom` struct the buyer signed.
+ *
+ * Every field is an input to `Permit2.permitWitnessTransferFrom`, which
+ * recomputes the signed digest from exactly these values and checks it
+ * against the signature. None of them can be dropped, defaulted, or
+ * fabricated downstream.
+ */
+export type Permit2Permit = {
+  permitted: { token: Address; amount: SmallestUnits };
+  /** The address that will call `permitWitnessTransferFrom` — the settler EOA. */
+  spender: Address;
+  /** uint256 nonce, decimal string. Doubles as the seller's idempotency key. */
+  nonce: string;
+  /** Unix seconds after which the authorization is dead. */
+  deadline: number;
+  witness: Permit2Witness | null;
+};
+
+/**
+ * The normalized envelope the verifier consumes. Carries the raw header
+ * bytes alongside the parsed authorization.
  */
 export type ParsedEnvelope = {
   /** Which header this envelope arrived on. */
   header: EnvelopeHeader;
-  /** The raw envelope, base64url-encoded. */
+  /** The raw envelope, base64-encoded. */
   payload: Base64Url;
-  /** Decoded JSON of the envelope. */
-  decoded: Permit2Authorization;
-  /** The payer's smart-account / EOA `from` address. */
+  /** The whole decoded JSON, kept for logging and for `accepted` echo checks. */
+  raw: Record<string, unknown>;
+  /** The payer's smart-account `from` address. */
   from: Address;
   /** Authorization nonce; the idempotency key the buyer is committing to. */
-  nonce: string | null;
-  /** Bound witness (used to verify payTo + amount match). */
-  witness: unknown;
-  /** Signature bytes as hex. */
+  nonce: string;
+  /** The full signed Permit2 struct. */
+  permit: Permit2Permit;
+  /** Signature bytes as hex — the 98-byte nested ERC-1271 envelope. */
   signature: Hex;
 };
 
@@ -80,6 +120,7 @@ export type ParseEnvelopeError =
   | { kind: "malformed-json"; cause: string }
   | { kind: "missing-from"; cause: string }
   | { kind: "missing-permit"; cause: string }
+  | { kind: "malformed-permit"; cause: string }
   | { kind: "missing-signature"; cause: string };
 
 export type ParseEnvelopeResult =
@@ -141,9 +182,12 @@ export function parseEnvelopeFromHeaders(headers: {
 }
 
 /**
- * Parse a base64url envelope payload. Tolerates both Permit2 dialects by
- * accepting `permit` OR `permit2Authorization` as the carrier of the
- * inner authorization.
+ * Parse a base64 envelope payload into the normalized authorization.
+ *
+ * Looks under `payload.*` first (where the SDK puts everything), then at
+ * the envelope root, then under `permit2Authorization` — in each case
+ * accepting `permit` or `permit2Authorization` as the carrier, since the
+ * SDK emits both with identical contents.
  */
 export function parseEnvelope(
   payload: Base64Url,
@@ -187,125 +231,197 @@ export function parseEnvelope(
     };
   }
 
-  // Prefer the canonical `permit` + sibling `from` (newer b402); fall
-  // back to `permit2Authorization` (older dialects).
-  const from =
-    readAddress(raw, "from") ?? readAddress(raw, "permit2Authorization.from");
-  const permit =
-    readObject(raw, "permit") ??
-    readObject(raw, "permit2Authorization.permit") ??
-    readObject(raw, "permit2Authorization");
+  // The SDK's inner payload. Absent only for a buyer that flattened the
+  // envelope, in which case the root doubles as the inner object.
+  const inner = readObject(raw, "payload") ?? raw;
 
+  const from =
+    readAddress(inner, "from") ??
+    readAddress(inner, "permit2Authorization.from") ??
+    readAddress(inner, "permit.from") ??
+    readAddress(raw, "from");
   if (!from) {
     return {
       kind: "err",
-      error: { kind: "missing-from", cause: "envelope had no `from` field" },
+      error: {
+        kind: "missing-from",
+        cause: "envelope had no `payload.from` or `from` field",
+      },
     };
   }
-  if (!permit) {
+
+  const permitObject =
+    readObject(inner, "permit") ?? readObject(inner, "permit2Authorization");
+  if (!permitObject) {
     return {
       kind: "err",
       error: {
         kind: "missing-permit",
-        cause: "envelope had no `permit` or `permit2Authorization` field",
+        cause: "envelope had no `permit` or `permit2Authorization` object",
       },
     };
   }
-  const signature = readHex(permit, "signature");
+
+  // The SDK puts the signature next to the permit, not inside it; a
+  // merged b402 envelope carries it in both places. Either is accepted.
+  const signature =
+    readHex(inner, "signature") ?? readHex(permitObject, "signature");
   if (!signature) {
     return {
       kind: "err",
       error: {
         kind: "missing-signature",
-        cause: "permit.signature missing or not hex",
+        cause: "envelope had no hex `signature`",
       },
     };
   }
-  const hash = readHex(permit, "hash");
-  const witness = permit.witness ?? null;
 
-  const decoded: Permit2Authorization = {
-    from,
-    permit: {
-      hash: hash ?? "0x",
-      witness,
-      signature,
-    },
-  };
-  const nonce =
-    readString(permit, "nonce") ??
-    readString(raw, "nonce") ??
-    (isObject(witness) ? readString(witness, "nonce") : null);
+  const permit = readPermit(permitObject);
+  if (permit.kind === "err") {
+    return { kind: "err", error: permit.error };
+  }
 
   return {
     kind: "ok",
     envelope: {
       header,
       payload,
-      decoded,
+      raw,
       from,
-      nonce,
-      witness,
+      nonce: permit.value.nonce,
+      permit: permit.value,
       signature,
     },
   };
 }
 
 /**
- * Extract the witness's bound `payTo` and `amount` if the envelope is
- * a Permit2 witness transfer. Returns `null` if the envelope is not a
- * recognizable Permit2 envelope.
+ * Read the Permit2 struct out of the wire object.
+ *
+ * Every field is required except `witness`: the legacy plain-`permit2`
+ * rail signs a bare `PermitTransferFrom` with no witness at all, and
+ * that shape is still parseable even though this seller only quotes
+ * `permit2-exact`. The verifier is what refuses a witness-less permit,
+ * so the classification lands as a verification failure rather than a
+ * parse failure.
  */
-export function readPermit2WitnessFields(witness: unknown): {
-  payTo: Address | null;
-  amount: SmallestUnits | null;
-  token: Address | null;
-  chainId: number | null;
-  nonce: string | null;
-  deadline: number | null;
-} {
-  const empty = {
-    payTo: null,
-    amount: null,
-    token: null,
-    chainId: null,
-    nonce: null,
-    deadline: null,
-  };
-  if (!isObject(witness)) return empty;
-  const candidate: Record<string, unknown> = witness;
-  const token =
-    readAddress(candidate, "token") ?? readAddress(candidate, "asset");
-  const payTo = readAddress(candidate, "payTo") ?? readAddress(candidate, "to");
-  const amount =
-    readBigint(candidate, "amount") ?? readBigint(candidate, "maxAmount");
-  const chainId = readNumber(candidate, "chainId");
-  const nonce = readString(candidate, "nonce");
-  const deadline =
-    readNumber(candidate, "deadline") ?? readNumber(candidate, "validUntil");
+function readPermit(
+  source: Record<string, unknown>,
+):
+  | { kind: "ok"; value: Permit2Permit }
+  | { kind: "err"; error: ParseEnvelopeError } {
+  const permitted = readObject(source, "permitted");
+  const token = permitted ? readAddress(permitted, "token") : null;
+  const amount = permitted ? readBigint(permitted, "amount") : null;
+  if (!permitted || !token || amount === null) {
+    return {
+      kind: "err",
+      error: {
+        kind: "malformed-permit",
+        cause: "permit.permitted missing a token/amount pair",
+      },
+    };
+  }
+
+  const spender = readAddress(source, "spender");
+  if (!spender) {
+    return {
+      kind: "err",
+      error: {
+        kind: "malformed-permit",
+        cause: "permit.spender missing or not an address",
+      },
+    };
+  }
+
+  const nonce = readUint256String(source, "nonce");
+  if (nonce === null) {
+    return {
+      kind: "err",
+      error: {
+        kind: "malformed-permit",
+        cause: "permit.nonce missing or not a uint256",
+      },
+    };
+  }
+
+  const deadline = readUnixSeconds(source, "deadline");
+  if (deadline === null) {
+    return {
+      kind: "err",
+      error: {
+        kind: "malformed-permit",
+        cause: "permit.deadline missing or not a Unix-seconds integer",
+      },
+    };
+  }
+
   return {
-    payTo,
-    amount,
-    token,
-    chainId,
-    nonce,
-    deadline,
+    kind: "ok",
+    value: {
+      permitted: { token, amount },
+      spender,
+      nonce,
+      deadline,
+      witness: readWitness(source),
+    },
   };
 }
 
 /**
- * Format `witness` as a structured log entry. Useful for troubleshooting
+ * Read the `Witness(address to,uint256 validAfter)` struct. Returns
+ * `null` when the permit carries no witness (the non-exact rail) or
+ * when the witness is present but unreadable — the verifier treats both
+ * the same way, since neither can produce a matching digest.
+ */
+function readWitness(source: Record<string, unknown>): Permit2Witness | null {
+  const witness = readObject(source, "witness");
+  if (!witness) return null;
+  const to = readAddress(witness, "to");
+  if (!to) return null;
+  const validAfter = readUint256String(witness, "validAfter") ?? "0";
+  return { to, validAfter };
+}
+
+/**
+ * The buyer's bindings, read from where the real wire actually puts
+ * them: token and amount under `permit.permitted`, recipient under
+ * `witness.to`.
+ *
+ * Deliberately no `chainId` — it is never transmitted. The chain is
+ * bound through the EIP-712 domain the signature covers, so a
+ * wrong-chain payment is caught by the recomputed-digest check in
+ * `verify.ts`, not by comparing a field here.
+ */
+export function permitBindings(permit: Permit2Permit): {
+  payTo: Address | null;
+  amount: SmallestUnits;
+  token: Address;
+  nonce: string;
+  deadline: number;
+} {
+  return {
+    payTo: permit.witness?.to ?? null,
+    amount: permit.permitted.amount,
+    token: permit.permitted.token,
+    nonce: permit.nonce,
+    deadline: permit.deadline,
+  };
+}
+
+/**
+ * Format a permit as a structured log entry. Useful for troubleshooting
  * without dumping arbitrary user data.
  */
-export function witnessSummary(input: {
-  witness: unknown;
-  payTo: Address;
-  amount: SmallestUnits;
-}): Record<string, unknown> {
+export function permitSummary(permit: Permit2Permit): Record<string, unknown> {
   return {
-    payTo: input.payTo,
-    amount: input.amount.toString(10),
-    witnessShape: input.witness === null ? "null" : typeof input.witness,
+    token: permit.permitted.token,
+    amount: permit.permitted.amount.toString(10),
+    spender: permit.spender,
+    nonce: permit.nonce,
+    deadline: permit.deadline,
+    payTo: permit.witness?.to ?? null,
+    hasWitness: permit.witness !== null,
   };
 }
 
@@ -320,7 +436,9 @@ export function paymentRequirementsField(
   // The buyer embeds the JSON-stringified requirement as the witness
   // payload; we return the canonical string so byte-equal requirements
   // hash to the same witness.
-  return JSON.stringify(required);
+  return JSON.stringify(required, (_key, value: unknown) =>
+    typeof value === "bigint" ? value.toString(10) : value,
+  );
 }
 
 // --- tiny parser helpers (kept local; never reach beyond this module)
@@ -333,30 +451,47 @@ function readObject(
   parent: Record<string, unknown>,
   dottedPath: string,
 ): Record<string, unknown> | null {
-  const segments = dottedPath.split(".");
-  let cursor: unknown = parent;
-  for (const segment of segments) {
-    if (!isObject(cursor)) return null;
-    cursor = (cursor as Record<string, unknown>)[segment];
-    if (cursor === undefined) return null;
-  }
+  const cursor = readPath(parent, dottedPath);
   return isObject(cursor) ? cursor : null;
 }
 
-function readString(
+/**
+ * Read a uint256 that travels as a decimal or `0x` string. Returns the
+ * canonical decimal form so two spellings of the same nonce are one
+ * idempotency key.
+ */
+function readUint256String(
   parent: Record<string, unknown>,
   key: string,
 ): string | null {
   const value = parent[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
+  if (typeof value === "bigint") return value.toString(10);
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value.toString(10);
+  }
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    const parsed = BigInt(value);
+    return parsed < 0n ? null : parsed.toString(10);
+  } catch {
+    return null;
+  }
 }
 
-function readNumber(
+/**
+ * Read a Unix-seconds timestamp that travels as a uint256 string.
+ * Rejects values past `Number.MAX_SAFE_INTEGER`, which would lose
+ * precision the moment they were compared against a clock.
+ */
+function readUnixSeconds(
   parent: Record<string, unknown>,
   key: string,
 ): number | null {
-  const value = parent[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  const asString = readUint256String(parent, key);
+  if (asString === null) return null;
+  const asBigint = BigInt(asString);
+  if (asBigint > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(asBigint);
 }
 
 function readBigint(
@@ -413,5 +548,3 @@ function readHex(parent: Record<string, unknown>, key: string): Hex | null {
   if (value.length % 2 !== 0) return null;
   return value as Hex;
 }
-
-type SmallestUnits = import("@neuro-pay/types").SmallestUnits;

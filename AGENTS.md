@@ -57,6 +57,7 @@ routes — which is fine for frontend-only or logging work.
 ## Architecture
 
 ### Composition-root pattern
+
 Both the seller (`apps/api/src/seller/index.ts`) and the payment runtime
 (`apps/api/src/runtime.ts`) follow a strict composition-root style: pure
 logic modules (streams, requirements, verify, idempotency, exposure,
@@ -70,6 +71,7 @@ envelope" is a composition choice made in `runtime.ts`, not a bug buried
 in the seller logic.
 
 ### Config loading is fully injectable
+
 Every module that reads configuration takes an `EnvSource` parameter
 (`packages/altana/src/config/env.ts` / `config.ts`). `loadAppConfig(env)`
 defaults to `process.env` but tests pass their own object — this is why
@@ -81,6 +83,7 @@ this wrong and a value silently becomes 10^18x too large or small — read
 `config.ts`'s comments before touching money-related env vars.
 
 ### Request flow through the seller
+
 `POST /v1/streams/:id/next` (`apps/api/src/routes/streams/next.ts`) →
 `seller.nextSegment()`: parse `X-PAYMENT` envelope → if missing, evaluate
 the metering policy (`@neuro-pay/metering`) and return a 402 with the
@@ -93,6 +96,7 @@ ledger → enqueue async settlement (not awaited; the response returns
 immediately). Exposure is released when settlement resolves.
 
 ### Ledger is the source of truth for the console
+
 `packages/ledger` is an append-only event store (`.data/ledger.sqlite` by
 default). The console (`apps/api/src/console/service.ts` +
 `apps/api/src/console/routes.ts`) reads sessions/streams/payments from the
@@ -105,6 +109,7 @@ that SSE stream; `lib/wire.ts` revives JSON-transported bigints/etc. back
 into typed values.
 
 ### Shared wire types
+
 `packages/types` defines every shape that crosses the `apps/api` ↔
 `apps/web` boundary (session, stream, ledger, x402, console, config).
 Token amounts are always `bigint` in smallest units — never `number`,
@@ -113,6 +118,7 @@ token loses precision immediately otherwise. When these types cross JSON,
 a codec tags/restores the bigints (see `lib/wire.ts` on the web side).
 
 ### Package dependency direction
+
 `@neuro-pay/types` and `@neuro-pay/metering` have no internal deps.
 `@neuro-pay/altana` (session lifecycle + x402 payment client, server-only)
 depends on `metering` and `types`. `@neuro-pay/ledger` is standalone.
@@ -122,6 +128,7 @@ visual effect package) — it must never import anything server-only; this
 is enforced by `apps/web`'s `check:no-server` script and test.
 
 ### Buyer side is not wired up
+
 `fetchWithX402` in `@neuro-pay/altana` is the buyer payment client — built
 and tested, but nothing in a running process calls it.
 `apps/api/scripts/demo-stream.ts` (`pnpm demo`) is a standalone script

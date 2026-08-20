@@ -7,17 +7,38 @@
  *   GET  /v1/budget    — window spend vs both limits
  *   POST /v1/session/revoke — two-stage kill switch
  *   POST /v1/session/revoke/retry — resubmit a failed on-chain revoke
+ *   POST /v1/settlements/:nonce/retry — resubmit a failed settlement
  *   GET  /v1/events    — SSE snapshots so the console need not reload
  */
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { toJsonSafe } from "../json.js";
-import { ConsoleNotFoundError, type ConsoleService } from "./service.js";
+import { getLog } from "../middleware.js";
+import {
+  ConsoleNotFoundError,
+  type ConsoleService,
+  type OperatorContext,
+} from "./service.js";
 
 export type ConsoleRouteDeps = {
   console: ConsoleService;
 };
+
+/**
+ * Attribute an action to the caller.
+ *
+ * `operator` rather than a user identity because the console
+ * authenticates with one shared bearer token — claiming to know *which*
+ * person acted would be a fiction. The request id is the real link: it
+ * ties the audit record to the access log line that has the source
+ * address and timing.
+ */
+function operatorContext(c: {
+  get: (key: "requestId") => string | undefined;
+}): OperatorContext {
+  return { actor: "operator", requestId: c.get("requestId") ?? null };
+}
 
 export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   const app = new Hono();
@@ -49,8 +70,16 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   app.post("/v1/session/revoke", async (c) => {
+    // Revocation is the kill switch. The ledger already records the
+    // outcome as `session.revoked`; this line records the *request* —
+    // when it arrived and under which request id — so an operator can
+    // tie a revoked session back to the call that ended it.
+    getLog(c).warn(
+      { action: "revoke", path: c.req.path },
+      "operator invoked session revocation",
+    );
     try {
-      const result = await deps.console.revoke();
+      const result = await deps.console.revoke(operatorContext(c));
       return c.json(toJsonSafe(result), 200);
     } catch (err) {
       if (err instanceof ConsoleNotFoundError) {
@@ -61,14 +90,54 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   app.post("/v1/session/revoke/retry", async (c) => {
+    // Revocation is the kill switch. The ledger already records the
+    // outcome as `session.revoked`; this line records the *request* —
+    // when it arrived and under which request id — so an operator can
+    // tie a revoked session back to the call that ended it.
+    getLog(c).warn(
+      { action: "revoke-retry", path: c.req.path },
+      "operator invoked session revocation",
+    );
     try {
-      const result = await deps.console.retryRevoke();
+      const result = await deps.console.retryRevoke(operatorContext(c));
       return c.json(toJsonSafe(result), 200);
     } catch (err) {
       if (err instanceof ConsoleNotFoundError) {
         return c.json({ error: { message: err.message } }, 404);
       }
       throw err;
+    }
+  });
+
+  app.post("/v1/settlements/:nonce/retry", async (c) => {
+    const nonce = c.req.param("nonce");
+    getLog(c).warn(
+      { action: "settlement-retry", nonce },
+      "operator requested a settlement retry",
+    );
+    try {
+      const result = await deps.console.retrySettlement(
+        nonce,
+        operatorContext(c),
+      );
+      return c.json(toJsonSafe(result), 200);
+    } catch (err) {
+      if (err instanceof ConsoleNotFoundError) {
+        return c.json({ error: { message: err.message } }, 404);
+      }
+      // A retry that reaches the chain and reverts is the operator's
+      // answer, not a server fault: they asked whether this settlement
+      // can go through now, and it cannot. 409 says "the resource is not
+      // in a state where this works" without claiming the API broke.
+      return c.json(
+        {
+          error: {
+            message: err instanceof Error ? err.message : String(err),
+            requestId: c.get("requestId"),
+          },
+        },
+        409,
+      );
     }
   });
 

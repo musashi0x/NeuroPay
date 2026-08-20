@@ -15,6 +15,7 @@
 import { Hono } from "hono";
 import {
   SellerUnavailableError,
+  StreamCapacityError,
   type Seller,
   type StreamOpenResponse,
 } from "../../seller/index.js";
@@ -39,6 +40,23 @@ export function openStreamRoute(deps: OpenStreamDeps): Hono {
       if (err instanceof SellerUnavailableError) {
         return c.json(
           { error: { message: err.message, reason: err.reason } },
+          503,
+        );
+      }
+      if (err instanceof StreamCapacityError) {
+        // Recoverable without operator action, unlike a shutdown: streams
+        // end on their own, so tell the caller when to come back rather
+        // than implying the service is going away.
+        c.header("Retry-After", "5");
+        return c.json(
+          {
+            error: {
+              message: err.message,
+              reason: "stream-capacity",
+              live: err.live,
+              ceiling: err.ceiling,
+            },
+          },
           503,
         );
       }

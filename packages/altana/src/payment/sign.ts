@@ -146,11 +146,28 @@ export async function signX402PaymentFor(
  * the SDK's preferred input shape. `extra.name` and `extra.version`
  * are only required for the eip3009 rail (the token's EIP-712
  * domain), and we leave them as the typed value carried them.
+ *
+ * `extra.spenderAddress` is the merchant's settler EOA, taken verbatim
+ * from the 402. It is NOT `payTo`: Permit2 checks the signed `spender`
+ * against `msg.sender` of whoever calls `permitWitnessTransferFrom`,
+ * which is the settler, while `payTo` is bound separately as the
+ * witness's `to`. Binding `payTo` here produces a signature that
+ * verifies off-chain and reverts on-chain, so a permit2 requirement
+ * that omits the spender is refused rather than guessed at.
  */
 function toSdkRequirement(
   requirement: X402Requirement,
 ): Parameters<typeof signX402Payment>[1] {
   const method = requirement.rail === "permit2" ? "permit2-exact" : "eip3009";
+  const spenderAddress = requirement.extra?.spenderAddress ?? null;
+  if (requirement.rail === "permit2" && !spenderAddress) {
+    throw new MissingSpenderError(
+      `signX402PaymentFor: the permit2 requirement for ${requirement.resource} ` +
+        `carries no extra.spenderAddress. Permit2 binds the signed spender to ` +
+        `msg.sender of the settlement call, so signing without the merchant's ` +
+        `settler address would produce an authorization that always reverts.`,
+    );
+  }
   return {
     scheme: "exact",
     network:
@@ -160,6 +177,11 @@ function toSdkRequirement(
     asset: requirement.asset,
     maxAmountRequired: requirement.maxAmountRequired.toString(),
     payTo: requirement.payTo,
+    // The merchant's validity window. Without this the SDK falls back to
+    // its own 3600s default, so the seller's `maxTimeoutSeconds` cap
+    // (60s here, 480s on the wire) would be silently ignored and the
+    // signed deadline would outlive the demand it was quoted against.
+    maxTimeoutSeconds: requirement.maxTimeoutSeconds,
     resource: requirement.resource,
     mimeType: requirement.mimeType,
     extra: {
@@ -172,9 +194,25 @@ function toSdkRequirement(
         ? { version: requirement.extra.version }
         : {}),
       assetTransferMethod: method,
-      ...(requirement.rail === "permit2"
-        ? { spenderAddress: requirement.payTo }
+      // Permit2 only. The eip3009 rail has no spender concept — the
+      // token itself is the checker — so echoing one there would be
+      // noise on the wire.
+      ...(requirement.rail === "permit2" && spenderAddress
+        ? { spenderAddress }
         : {}),
     },
   };
+}
+
+/**
+ * Thrown when a permit2 requirement arrives without the merchant's
+ * settler address. Distinct from a generic signing failure so the
+ * request layer can report "this merchant's 402 is incomplete" rather
+ * than "the session key refused to sign".
+ */
+export class MissingSpenderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingSpenderError";
+  }
 }

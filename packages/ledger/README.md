@@ -130,3 +130,147 @@ logical id (the corrected entry's `correctsEntryId ?? id`) to the
 highest-sequence member, so a correction shadows the original without
 overwriting it. `lookupByNonce` returns the _raw_ entries, so an auditor
 sees both the original and the correction side by side.
+
+## Schema versioning and migrations
+
+The schema is an ordered, append-only list of numbered migrations in
+`src/migrations.ts`. Opening a store runs every pending one inside a
+single transaction, stamps `PRAGMA user_version`, and records what was
+applied in `schema_migrations`.
+
+Three properties are worth knowing:
+
+- **A file from a newer build is refused.** Opening a ledger whose
+  `user_version` is ahead of the code throws `LedgerSchemaVersionError`
+  rather than proceeding. An older binary appending rows shaped by an
+  older understanding of the schema, into a file a newer one is also
+  writing, is a corruption path with no automatic recovery — so it is
+  fatal at open, where the operator can still choose.
+- **A legacy file upgrades in place.** Every migration is idempotent, so
+  a ledger written before versioning existed (`user_version = 0`, tables
+  already present) is brought current by replaying the whole list. There
+  is no export/import step.
+- **The run is atomic.** A migration list that fails halfway rolls back
+  entirely; the file stays at the version it was, rather than in a state
+  no version number describes.
+
+Migrations are additive by rule: create tables, create indexes, add
+columns. A published version number is never edited or renumbered — a
+mistake is corrected by a new migration on top. Destructive changes need
+a new table plus a copy, written as their own migration.
+
+`store.schemaInfo()` reports the file's version, the version this build
+supports, and every recorded migration. The API's readiness probe reads
+it, so a version mismatch shows up in `/v1/health` rather than as a
+confusing insert failure.
+
+## The audit trail
+
+`audit_events` is a second append-only table in the same file, holding
+administrative actions: who invoked the kill switch, when a price sheet
+changed, what configuration the process booted with. It is separate from
+`ledger_entries` because every ledger row carries a chain, a token, and
+decimals — every row is a fact about money — and "an operator revoked the
+session at 14:02" has none of those. Forcing it into that shape would
+mean inventing values that later aggregations would sum over.
+
+It keeps the same three guarantees: append-only, independently ordered by
+`seq`, and guarded by `assertNoKeyMaterial` on the write path. A record
+with no actor is refused — a trail you cannot attribute is not an audit
+trail.
+
+## Backup, restore, and recovery
+
+The ledger is the durable record of every payment-relevant event. It is
+also a single SQLite file, which makes all of this simpler than it
+sounds — and makes the one wrong way to do it worth naming.
+
+### Taking a backup
+
+Use SQLite's own backup, not `cp`. WAL mode means the `.db` file alone is
+an incomplete picture: copying it while the process is running captures a
+torn state that may be missing the most recent commits, and `cp`-ing the
+three files (`.db`, `-wal`, `-shm`) separately captures them at three
+different instants.
+
+```bash
+sqlite3 .data/ledger.sqlite ".backup '/backups/ledger-$(date -u +%Y%m%dT%H%M%SZ).sqlite'"
+```
+
+`.backup` takes a consistent snapshot of a live database without stopping
+the writer. Verify every backup you take — an unverified backup is a
+belief, not a backup:
+
+```bash
+sqlite3 /backups/ledger-20260820T120000Z.sqlite "PRAGMA integrity_check; PRAGMA user_version;"
+```
+
+`integrity_check` must print `ok`, and `user_version` tells you which
+build can open it. Record that number: restoring a version-3 file onto a
+build that only knows version 2 is exactly the case the schema guard
+refuses.
+
+Back up at least as often as you would be willing to re-derive from
+chain: the settlement transactions themselves are on chain and
+recoverable, but delivery records, refusal classifications, and the audit
+trail exist nowhere else.
+
+### Restoring
+
+1. Stop the API process. SQLite is single-writer and restoring underneath
+   a live one produces a file neither process agrees about.
+2. Move the current files aside rather than deleting them — including
+   `-wal` and `-shm`. A ledger that looks corrupt is often recoverable,
+   and it is the only copy of the events since the last backup.
+   ```bash
+   mkdir -p .data/quarantine
+   mv .data/ledger.sqlite* .data/quarantine/
+   ```
+3. Copy the backup into place as `LEDGER_PATH`.
+4. Start the process. Migrations run automatically; the boot log reports
+   any that were applied.
+5. Reconcile. A restored ledger is behind the chain: settlements
+   submitted after the backup exist on chain and not in the file. See
+   `docs/runbooks/settlement-reconciliation.md` — startup reconciliation
+   runs on its own, and the report names deliveries with no intent.
+
+### Suspected corruption
+
+```bash
+sqlite3 .data/ledger.sqlite "PRAGMA integrity_check;"
+```
+
+If it prints anything but `ok`, do not keep writing to the file. Stop the
+process first, then try to salvage the readable rows into a fresh
+database before falling back to a backup:
+
+```bash
+sqlite3 .data/ledger.sqlite ".recover" | sqlite3 .data/ledger-recovered.sqlite
+sqlite3 .data/ledger-recovered.sqlite "PRAGMA integrity_check;"
+```
+
+`.recover` reads what it can from the raw pages and is usually a better
+outcome than a backup, because it loses nothing that is still readable.
+Compare `SELECT MAX(seq) FROM ledger_entries` between the recovered file
+and your most recent backup to see which is further ahead, then treat the
+winner as the new ledger and follow the restore steps from step 3.
+
+The append-only design is what makes this tractable: no row is ever
+rewritten, so a partially-recovered ledger is a _prefix_ of the truth
+rather than a mixture of old and new states.
+
+### Retention
+
+Keep everything. The ledger grows by one row per payment event — not per
+call — so a busy stream produces a few rows a minute, and the file stays
+small enough that pruning costs more than it saves. Every derived number
+the system reports (window spend, unsettled exposure, settlement latency,
+failure counts) is recomputed from the full trail on read, so deleting
+old rows silently changes those answers rather than merely freeing space.
+
+If a retention policy is imposed from outside, export before pruning and
+keep the export for as long as the payments it describes could be
+disputed. Prune by copying the rows you keep into a fresh database rather
+than issuing `DELETE` against the live one — the schema has no delete
+path, and adding one would weaken the guarantee that makes the trail
+worth trusting.

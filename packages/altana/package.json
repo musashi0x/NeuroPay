@@ -18,7 +18,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "provision": "tsx scripts/provision.ts"
+    "provision": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/provision.ts",
+    "revoke": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/revoke.ts",
+    "probe:fee": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/first-action-fee.ts",
+    "runbook": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/runbook.ts",
+    "test:chain": "vitest run --config vitest.chain.config.ts"
   },
   "dependencies": {
     "@altananetwork/sdk": "catalog:",
@@ -28,11 +32,12 @@
   },
   "devDependencies": {
     "@neuro-pay/eslint-config": "workspace:*",
+    "@neuro-pay/evm-testnet": "workspace:*",
     "@neuro-pay/tsconfig": "workspace:*",
     "@types/node": "^22.18.12",
     "eslint": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "tsx": "catalog:"
+    "vitest": "catalog:"
   }
 }

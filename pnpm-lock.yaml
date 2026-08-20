@@ -69,9 +69,15 @@ importers:
         specifier: 'catalog:'
         version: 2.55.17(typescript@5.9.3)(zod@4.4.3)
     devDependencies:
+      '@altananetwork/sdk':
+        specifier: 'catalog:'
+        version: 0.7.1(@types/react@19.2.18)(@wagmi/core@3.6.4(@types/react@19.2.18)(react@19.2.8)(typescript@5.9.3)(viem@2.55.17(typescript@5.9.3)(zod@4.4.3)))(react@19.2.8)(typescript@5.9.3)(zod@4.4.3)
       '@neuro-pay/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@neuro-pay/evm-testnet':
+        specifier: workspace:*
+        version: link:../../packages/evm-testnet
       '@neuro-pay/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
@@ -170,6 +176,9 @@ importers:
       '@neuro-pay/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@neuro-pay/evm-testnet':
+        specifier: workspace:*
+        version: link:../evm-testnet
       '@neuro-pay/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -238,6 +247,37 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+
+  packages/evm-testnet:
+    dependencies:
+      '@neuro-pay/types':
+        specifier: workspace:*
+        version: link:../types
+      viem:
+        specifier: 'catalog:'
+        version: 2.55.17(typescript@5.9.3)(zod@4.4.3)
+    devDependencies:
+      '@neuro-pay/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@neuro-pay/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^22.18.12
+        version: 22.20.1
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.5(jiti@2.7.0)
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.12
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@22.20.1)(vite@8.2.1(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12))
 
   packages/ledger:
     dependencies:

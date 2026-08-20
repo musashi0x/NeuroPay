@@ -163,7 +163,16 @@ export type PaymentVerifiedInput = WriteInput & {
  */
 export type PaymentRejectedInput = WriteInput & {
   amount: SmallestUnits | null;
-  nonce: string;
+  /**
+   * The authorization nonce, when there is one.
+   *
+   * `null` is a real case, not a shortcut: an envelope rejected for a
+   * malformed header or a revoked session is refused *before* a nonce
+   * can be parsed out of it. Writing a placeholder would put a nonce
+   * into `lookupByNonce`'s index that no buyer ever sent, so the absence
+   * is recorded honestly instead.
+   */
+  nonce: string | null;
   classification: PaymentFailureClassification;
   detail?: string | null;
   timestamp?: string;
@@ -176,7 +185,17 @@ export type PaymentRejectedInput = WriteInput & {
  */
 export type SegmentDeliveredInput = WriteInput & {
   amount: SmallestUnits;
-  nonce: string;
+  /**
+   * The authorization nonce, when the segment was paid for.
+   *
+   * `null` is the threshold-or-tick model working as designed: the
+   * seller delivers on credit until `accruedUnpaid` reaches the
+   * settlement threshold, and those deliveries carry no payment and so
+   * no nonce. Recording them is what makes the accrual auditable — the
+   * demand that eventually fires has to be reconcilable against the
+   * segments that produced it.
+   */
+  nonce: string | null;
   secondsDelivered: number;
   unitsDelivered: number;
 };

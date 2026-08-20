@@ -28,3 +28,7 @@ coverage
 openspec/
 .claude/
 .opencode/
+
+# Solidity build output (packages/evm-testnet)
+out/
+cache/
