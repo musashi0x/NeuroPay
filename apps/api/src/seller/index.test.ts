@@ -24,6 +24,8 @@ import { Buffer } from "node:buffer";
 
 const TOKEN: Address = "0x55d398326f99059f775a46c830bb1ec1b4f2e75d";
 const PAY_TO: Address = "0x000000000000000000000000000000000000d3ad";
+/** The settler EOA published as the Permit2 spender; never `payTo`. */
+const SETTLER: Address = "0x5e771e4000000000000000000000000000005e77";
 const PAYER: Address = "0x000000000000000000000000000000000000c0de";
 
 function clock(): Clock {
@@ -52,6 +54,61 @@ function envelopeHeaders(payload: Record<string, unknown>): {
   return { get: (n) => (n.toLowerCase() === "x-payment" ? raw : null) };
 }
 
+/**
+ * A permit in the real wire shape: everything under `payload.*`, the
+ * token/amount inside `permit.permitted`, the recipient inside
+ * `witness.to`, and no `hash` or `chainId` anywhere — because neither
+ * exists on the wire. `nonce` is the Permit2 uint256, which is also the
+ * seller's idempotency key.
+ *
+ * The cryptographic round-trip lives in envelope/verify/integration
+ * tests against real SDK output; these lifecycle tests only need a
+ * structurally honest envelope with a stubbed verifier.
+ *
+ * Tests still name their nonces with readable labels; `nonceFor` maps a
+ * label to the uint256 the wire requires, so a ledger lookup can use the
+ * same label the envelope was built with.
+ */
+function nonceFor(label: string): string {
+  let hash = 0n;
+  for (const ch of label)
+    hash = (hash * 131n + BigInt(ch.codePointAt(0)!)) % 2n ** 64n;
+  return hash.toString(10);
+}
+
+function permitEnvelope(
+  nonce: string,
+  overrides: {
+    payTo?: Address;
+    amount?: string;
+    token?: Address;
+    spender?: Address;
+    deadline?: number;
+  } = {},
+): Record<string, unknown> {
+  const permit = {
+    permitted: {
+      token: overrides.token ?? TOKEN,
+      amount: overrides.amount ?? "1000",
+    },
+    spender: overrides.spender ?? SETTLER,
+    nonce: nonceFor(nonce),
+    deadline: String(overrides.deadline ?? 4_102_444_800),
+    witness: { to: overrides.payTo ?? PAY_TO, validAfter: "0" },
+  };
+  return {
+    x402Version: 1,
+    scheme: "exact",
+    network: "bsc-testnet",
+    payload: {
+      signature: "0x" + "11".repeat(98),
+      from: PAYER,
+      permit: { ...permit, from: PAYER },
+      permit2Authorization: { ...permit, from: PAYER },
+    },
+  };
+}
+
 function buildSeller(opts: {
   verifier?: Verifier;
   meteringConfig?: MeteringConfig;
@@ -69,6 +126,7 @@ function buildSeller(opts: {
       chainId: 97,
       token: TOKEN,
       tokenDecimals: 18,
+      settlerAddress: SETTLER,
       maxSecondsPerSegment: 10,
       maxUnitsPerSegment: 10,
     },
@@ -139,20 +197,7 @@ describe("seller composition root", () => {
       requestUrl: "https://api.example/v1/streams",
     });
 
-    const env = {
-      from: PAYER,
-      permit: {
-        hash: "0x" + "22".repeat(32),
-        signature: "0x" + "11".repeat(65),
-        witness: {
-          payTo: PAY_TO,
-          amount: "1000",
-          token: TOKEN,
-          chainId: 97,
-          nonce: "x-replay",
-        },
-      },
-    };
+    const env = permitEnvelope("x-replay");
     const headers = envelopeHeaders(env);
 
     const first = await seller.nextSegment({
@@ -191,29 +236,18 @@ describe("seller composition root", () => {
     });
     const first = await seller.nextSegment({
       streamId: opened.streamId,
-      headers: envelopeHeaders({
-        from: PAYER,
-        permit: {
-          hash: "0x" + "22".repeat(32),
-          signature: "0x" + "11".repeat(65),
-          witness: {
-            payTo: PAY_TO,
-            amount: "1000",
-            token: TOKEN,
-            chainId: 97,
-            nonce: "outbox-seg-1",
-          },
-        },
-      }),
+      headers: envelopeHeaders(permitEnvelope("outbox-seg-1")),
       requestUrl: `https://api.example/v1/streams/${opened.streamId}/next`,
     });
     expect(first.kind).toBe("delivered");
-    const intent = await store.getIntent("outbox-seg-1");
+    const intent = await store.getIntent(nonceFor("outbox-seg-1"));
     expect(intent).not.toBeNull();
     expect(["pending", "submitted"]).toContain(intent?.status);
     stalled.confirm();
     await seller.drainSettlements();
-    expect((await store.getIntent("outbox-seg-1"))?.status).toBe("confirmed");
+    expect((await store.getIntent(nonceFor("outbox-seg-1")))?.status).toBe(
+      "confirmed",
+    );
   });
 
   it("exposure-limit gate fires once maxInFlight settlements are pending", async () => {
@@ -230,20 +264,12 @@ describe("seller composition root", () => {
       requestUrl: "https://api.example/v1/streams",
     });
 
-    const env = (nonce: string) => ({
-      from: PAYER,
-      permit: {
-        hash: "0x" + "22".repeat(32),
-        signature: "0x" + "11".repeat(65),
-        witness: {
-          payTo: PAY_TO,
-          amount: "1",
-          token: TOKEN,
-          chainId: 97,
-          nonce,
-        },
-      },
-    });
+    const env = (nonce: string) =>
+      // Generously over-authorized: these cases are about exposure and
+      // settlement lifecycle, and the seller now derives its demand from
+      // its own meter rather than from the buyer's permit, so a token
+      // amount would trip `amount-underpaid` before the gate under test.
+      permitEnvelope(nonce, { amount: "1000000" });
 
     const r1 = await seller.nextSegment({
       streamId: opened.streamId,
@@ -274,20 +300,7 @@ describe("seller composition root", () => {
     const opened = seller.openStream({
       requestUrl: "https://api.example/v1/streams",
     });
-    const env = {
-      from: PAYER,
-      permit: {
-        hash: "0x" + "22".repeat(32),
-        signature: "0x" + "11".repeat(65),
-        witness: {
-          payTo: PAY_TO,
-          amount: "1000",
-          token: TOKEN,
-          chainId: 97,
-          nonce: "settle-credit-1",
-        },
-      },
-    };
+    const env = permitEnvelope("settle-credit-1");
 
     const delivered = await seller.nextSegment({
       streamId: opened.streamId,
@@ -324,20 +337,12 @@ describe("seller composition root", () => {
     const opened = seller.openStream({
       requestUrl: "https://api.example/v1/streams",
     });
-    const env = (nonce: string) => ({
-      from: PAYER,
-      permit: {
-        hash: "0x" + "22".repeat(32),
-        signature: "0x" + "11".repeat(65),
-        witness: {
-          payTo: PAY_TO,
-          amount: "1",
-          token: TOKEN,
-          chainId: 97,
-          nonce,
-        },
-      },
-    });
+    const env = (nonce: string) =>
+      // Generously over-authorized: these cases are about exposure and
+      // settlement lifecycle, and the seller now derives its demand from
+      // its own meter rather than from the buyer's permit, so a token
+      // amount would trip `amount-underpaid` before the gate under test.
+      permitEnvelope(nonce, { amount: "1000000" });
 
     const first = await seller.nextSegment({
       streamId: opened.streamId,
@@ -379,20 +384,12 @@ describe("seller composition root", () => {
     const opened = seller.openStream({
       requestUrl: "https://api.example/v1/streams",
     });
-    const env = (nonce: string) => ({
-      from: PAYER,
-      permit: {
-        hash: "0x" + "22".repeat(32),
-        signature: "0x" + "11".repeat(65),
-        witness: {
-          payTo: PAY_TO,
-          amount: "1",
-          token: TOKEN,
-          chainId: 97,
-          nonce,
-        },
-      },
-    });
+    const env = (nonce: string) =>
+      // Generously over-authorized: these cases are about exposure and
+      // settlement lifecycle, and the seller now derives its demand from
+      // its own meter rather than from the buyer's permit, so a token
+      // amount would trip `amount-underpaid` before the gate under test.
+      permitEnvelope(nonce, { amount: "1000000" });
 
     const first = await seller.nextSegment({
       streamId: opened.streamId,
@@ -444,6 +441,7 @@ describe("seller composition root", () => {
         chainId: 97,
         token: TOKEN,
         tokenDecimals: 18,
+        settlerAddress: SETTLER,
         streamTtlSeconds: 10,
         maxSecondsPerSegment: 10,
         maxUnitsPerSegment: 10,

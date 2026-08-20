@@ -7,18 +7,33 @@
  * can validate a 98-byte session-key envelope from a smart account, and
  * `ecrecover` on those bytes is meaningless.
  *
+ * ## The digest is recomputed, never received
+ *
+ * The real b402 wire carries no EIP-712 hash — `signX402Payment` returns
+ * the signature and the Permit2 struct, and nothing else. So the seller
+ * rebuilds the typed data from the parsed permit plus its *own* chain id
+ * and hashes it. This is not a convenience: a wire-supplied hash would
+ * let a buyer hand over a digest that matches its signature while the
+ * permit body says something else entirely.
+ *
+ * Recomputing also subsumes the old `wrong-chain` field check. The chain
+ * id is never on the wire — it enters only through the EIP-712 domain the
+ * signature covers — so a buyer that signed for chain 56 and paid a
+ * chain-97 seller produces a digest the account will not validate, and
+ * fails as `verification-failed`. There is no field to compare and no
+ * need for one.
+ *
  * The verifier is an injected function (see `Verifier`) so the route layer
  * never imports viem directly; tests stub the verifier with a callback
  * that returns either the magic value (accept) or anything else (reject).
  *
  * Rejection cases are explicit and carry distinct classifications:
- * - underpaid (witness amount < demanded): `amount-underpaid`
- * - wrong recipient (witness payTo ≠ config payTo): `recipient-mismatch`
- * - malformed magic / read error: `verification-failed`
- *
- * The shipment's `payment.rejected` ledger entry carries the same
- * classification so the operator console never has to guess.
+ * - underpaid (permit amount < demanded): `amount-underpaid`
+ * - wrong recipient (witness.to ≠ config payTo): `recipient-mismatch`
+ * - wrong token / wrong spender / expired / bad magic: `verification-failed`
  */
+
+import { permit2WitnessDigest } from "@neuro-pay/altana";
 
 import type {
   Address,
@@ -30,7 +45,7 @@ import type {
 
 import { systemClock, type Clock } from "@neuro-pay/metering";
 
-import { type ParsedEnvelope, readPermit2WitnessFields } from "./envelope.js";
+import { permitBindings, type ParsedEnvelope } from "./envelope.js";
 
 /** The ERC-1271 magic value: `isValidSignature` returns it on a good hash+signature pair. */
 export const IS_VALID_SIGNATURE_MAGIC = "0x1626ba7e" as Hex;
@@ -46,7 +61,7 @@ export const IS_VALID_SIGNATURE_MAGIC = "0x1626ba7e" as Hex;
 export type Verifier = (input: {
   /** The smart account that produced the envelope. */
   payer: Address;
-  /** The hash the buyer signed over (EIP-712 digest of the witness-bound Permit2 typed data). */
+  /** The digest the seller recomputed from the permit — never a wire value. */
   hash: Hex;
   /** The 98-byte signature bytes. */
   signature: Hex;
@@ -58,24 +73,32 @@ export type VerifyInput = {
   demandedAmount: SmallestUnits;
   /** The recipient the segment owner committed to. */
   expectedPayTo: Address;
-  /** The token address from the pinned sheet, used to confirm witness binds the same token. */
+  /** The token address from the pinned sheet, used to confirm the permit binds the same token. */
   expectedToken: Address;
-  /** The chain id the witness must match. */
+  /** The chain id the digest is recomputed against. Local config, never the wire. */
   expectedChainId: number;
+  /**
+   * The settler EOA that will call `permitWitnessTransferFrom`. Permit2
+   * binds the signed `spender` to that call's `msg.sender`, so a permit
+   * naming anyone else is unsettleable here.
+   */
+  expectedSpender: Address;
   /** The full 402 body, used to bind the verification to this demand. */
   paymentRequired: X402PaymentRequired;
 };
 
 export type VerifySuccess = {
   kind: "ok";
-  /** What the buyer authorized, copied from the witness for downstream checks. */
+  /** What the buyer authorized, copied from the permit for downstream checks. */
   authorized: {
     payTo: Address;
     amount: SmallestUnits;
     token: Address;
     chainId: number;
-    nonce: string | null;
+    nonce: string;
   };
+  /** The digest the seller recomputed and the account validated. */
+  digest: Hex;
 };
 
 export type VerifyFailure = {
@@ -93,9 +116,9 @@ export type VerifyResult = VerifySuccess | VerifyFailure;
  * classification. Programmer errors (non-Object inputs, etc.) are not
  * caught and bubble up to the route's error handler.
  *
- * The `clock` parameter is the source of "now" for the session-expiry
- * check: if `witness.deadline < clock.now()` the envelope is rejected
- * as `verification-failed` with detail `"session expired"`. The witness
+ * The `clock` parameter is the source of "now" for the deadline check:
+ * if `permit.deadline < clock.now()` the envelope is rejected as
+ * `verification-failed` with detail `"session expired"`. The permit's
  * `deadline` is in Unix seconds (EIP-712 typed-data convention) while
  * `clock.now()` is milliseconds, so the comparison is done in
  * milliseconds: `deadline * 1000 < now`.
@@ -105,74 +128,74 @@ export async function verifyEnvelope(
   verifier: Verifier,
   clock: Clock = systemClock,
 ): Promise<VerifyResult> {
-  const witness = readPermit2WitnessFields(input.envelope.witness);
-  if (
-    !witness.payTo ||
-    witness.amount === null ||
-    !witness.token ||
-    witness.chainId === null
-  ) {
+  const permit = input.envelope.permit;
+  const bindings = permitBindings(permit);
+
+  // A witness-less permit is the legacy plain-`permit2` rail. This seller
+  // only ever quotes `permit2-exact`, whose whole point is that the
+  // recipient is cryptographically bound — without it, a settler could
+  // redirect the transfer.
+  if (bindings.payTo === null) {
     return {
       kind: "fail",
       classification: "verification-failed",
-      detail: "envelope witness missing payTo/amount/token/chainId",
+      detail:
+        "permit carries no witness; permit2-exact binds payTo in the witness",
     };
   }
-  if (witness.payTo !== input.expectedPayTo) {
+  if (!sameAddress(bindings.payTo, input.expectedPayTo)) {
     return {
       kind: "fail",
       classification: "recipient-mismatch",
-      detail: `witness payTo ${witness.payTo} != expected ${input.expectedPayTo}`,
+      detail: `witness to ${bindings.payTo} != expected ${input.expectedPayTo}`,
     };
   }
-  if (witness.token !== input.expectedToken) {
+  if (!sameAddress(bindings.token, input.expectedToken)) {
     return {
       kind: "fail",
       classification: "verification-failed",
-      detail: `witness token ${witness.token} != expected ${input.expectedToken}`,
+      detail: `permit token ${bindings.token} != expected ${input.expectedToken}`,
     };
   }
-  if (witness.chainId !== input.expectedChainId) {
+  if (!sameAddress(permit.spender, input.expectedSpender)) {
     return {
       kind: "fail",
       classification: "verification-failed",
-      detail: `witness chainId ${witness.chainId} != expected ${input.expectedChainId}`,
+      detail:
+        `permit spender ${permit.spender} != settler ${input.expectedSpender}; ` +
+        `Permit2 requires the signed spender to equal msg.sender of the settlement call`,
     };
   }
-  if (witness.amount < input.demandedAmount) {
+  if (bindings.amount < input.demandedAmount) {
     return {
       kind: "fail",
       classification: "amount-underpaid",
-      detail: `witness amount ${witness.amount} < demanded ${input.demandedAmount}`,
+      detail: `permit amount ${bindings.amount} < demanded ${input.demandedAmount}`,
     };
   }
-  // Session-expiry enforcement. The witness's `deadline` (Unix seconds)
-  // is bound to the EIP-712 signature, so an expired witness is
-  // cryptographically rejected on chain too — but we reject it here so
-  // the buyer gets a `verification-failed` response immediately rather
-  // than after a tx revert. Misses (deadline absent) are treated as
-  // unexpired: the witness never committed to a TTL, so we don't
-  // reject on its behalf.
-  if (witness.deadline !== null) {
-    const nowMs = clock.now();
-    const deadlineMs = witness.deadline * 1000;
-    if (deadlineMs < nowMs) {
-      return {
-        kind: "fail",
-        classification: "verification-failed",
-        detail: "session expired",
-      };
-    }
+  // Deadline enforcement. The deadline is bound to the EIP-712 signature,
+  // so an expired permit is cryptographically rejected on chain too — but
+  // we reject it here so the buyer gets a `verification-failed` response
+  // immediately rather than after a tx revert.
+  if (permit.deadline * 1000 < clock.now()) {
+    return {
+      kind: "fail",
+      classification: "verification-failed",
+      detail: "session expired",
+    };
   }
+
+  const digest = recomputePermit2Digest({
+    permit,
+    chainId: input.expectedChainId,
+    witness: permit.witness!,
+  });
 
   let magic: Hex;
   try {
     magic = await verifier({
       payer: input.envelope.from,
-      hash:
-        input.envelope.decoded.permit.hash === "0x"
-          ? ("0x" as Hex)
-          : input.envelope.decoded.permit.hash,
+      hash: digest,
       signature: input.envelope.signature,
     });
   } catch (cause) {
@@ -204,14 +227,45 @@ export async function verifyEnvelope(
 
   return {
     kind: "ok",
+    digest,
     authorized: {
-      payTo: witness.payTo,
-      amount: witness.amount,
-      token: witness.token,
-      chainId: witness.chainId,
-      nonce: witness.nonce,
+      payTo: bindings.payTo,
+      amount: bindings.amount,
+      token: bindings.token,
+      chainId: input.expectedChainId,
+      nonce: bindings.nonce,
     },
   };
+}
+
+/**
+ * Rebuild the EIP-712 digest the buyer signed.
+ *
+ * Uses the SDK's own `buildPermit2WitnessTypedData` so the seller and the
+ * buyer are provably hashing the same struct definition — if the SDK's
+ * witness type ever changes, both sides move together instead of silently
+ * disagreeing. `chainId` comes from local config; everything else comes
+ * from the permit the buyer sent.
+ */
+export function recomputePermit2Digest(input: {
+  permit: {
+    permitted: { token: Address; amount: SmallestUnits };
+    spender: Address;
+    nonce: string;
+    deadline: number;
+  };
+  witness: { to: Address; validAfter: string };
+  chainId: number;
+}): Hex {
+  return permit2WitnessDigest({
+    chainId: input.chainId,
+    authorization: { ...input.permit, witness: input.witness },
+  });
+}
+
+/** Addresses are compared case-insensitively; EIP-55 checksums vary by producer. */
+function sameAddress(a: Address, b: Address): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /**

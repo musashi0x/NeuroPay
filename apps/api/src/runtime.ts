@@ -100,7 +100,7 @@ export function tryCreateRuntime(
   const hub: { notify: () => void } = { notify() {} };
 
   const verifier = createRuntimeVerifier(config);
-  const settler = createRuntimeSettler(config, ledger, env);
+  const { settler, settlerAddress } = createRuntimeSettler(config, ledger, env);
   const sessionAuthority = createRuntimeSessionAuthority(config, sessions);
 
   const seller = createSeller({
@@ -111,6 +111,7 @@ export function tryCreateRuntime(
       chainId: config.chain.chainId,
       token: config.chain.token,
       tokenDecimals: config.chain.tokenDecimals,
+      settlerAddress,
     },
     store: watchLedger(ledger, () => hub.notify()),
     verifier,
@@ -205,7 +206,11 @@ function createRuntimeSettler(
   config: ReturnType<typeof loadAppConfig>,
   ledger: LedgerStore,
   env: NodeJS.ProcessEnv,
-): import("./seller/settle.js").Settler {
+): {
+  settler: import("./seller/settle.js").Settler;
+  /** The address published in the 402 as `extra.spenderAddress`. */
+  settlerAddress: Address;
+} {
   const rpcUrl = config.chain.rpcUrl;
   const pk = env["SETTLER_PRIVATE_KEY"];
 
@@ -213,9 +218,15 @@ function createRuntimeSettler(
     logger.warn(
       "RPC_URL or SETTLER_PRIVATE_KEY missing — using in-memory settler " +
         "(defaultBehavior: confirm). This is fine for local dev but no " +
-        "settlement ever reaches the chain.",
+        "settlement ever reaches the chain. The 402 advertises `payTo` as " +
+        "the Permit2 spender, so signatures produced against this process " +
+        "are NOT settleable on chain — configure a settler key before " +
+        "treating a local payment as real.",
     );
-    return createInMemorySettler({ defaultBehavior: "confirm" });
+    return {
+      settler: createInMemorySettler({ defaultBehavior: "confirm" }),
+      settlerAddress: config.chain.payTo,
+    };
   }
 
   try {
@@ -231,15 +242,22 @@ function createRuntimeSettler(
       transport: http(rpcUrl),
     });
 
-    return createChainBackedSettler({
-      walletClient,
-      publicClient,
-      spenderAddress: config.chain.payTo,
-      permit2Address: PERMIT2_ADDRESS,
-      chainId: config.chain.chainId,
-      ledger,
-      lostTxTimeoutMs: 60_000,
-    });
+    return {
+      settler: createChainBackedSettler({
+        walletClient,
+        publicClient,
+        settlerAddress: account.address,
+        permit2Address: PERMIT2_ADDRESS,
+        chainId: config.chain.chainId,
+        ledger,
+        lostTxTimeoutMs: 60_000,
+      }),
+      // The address the buyer must bind as the Permit2 spender. It is the
+      // settler EOA, not `payTo`: Permit2 checks the signed spender
+      // against `msg.sender` of the settlement call, and this account is
+      // what sends it.
+      settlerAddress: account.address as Address,
+    };
   } catch (err: unknown) {
     logger.warn(
       {
@@ -247,7 +265,10 @@ function createRuntimeSettler(
       },
       "settler wiring failed; falling back to in-memory settler",
     );
-    return createInMemorySettler({ defaultBehavior: "confirm" });
+    return {
+      settler: createInMemorySettler({ defaultBehavior: "confirm" }),
+      settlerAddress: config.chain.payTo,
+    };
   }
 }
 

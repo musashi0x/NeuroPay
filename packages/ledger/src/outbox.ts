@@ -18,6 +18,22 @@ import type {
 export type SettlementIntentStatus =
   "pending" | "submitted" | "confirmed" | "failed";
 
+/**
+ * The buyer-signed Permit2 authorization, persisted alongside the intent.
+ *
+ * Without these three fields a recovered intent is unsettleable: Permit2
+ * rebuilds the signed digest from the spender, the witness, and the
+ * permit body, then checks it against the signature. A process that
+ * crashes between delivery and submission has to be able to reconstruct
+ * the exact same arguments, so they live in the table rather than only in
+ * the in-flight request.
+ */
+export type SettlementAuthorizationRecord = {
+  signature: Hex;
+  spender: Address;
+  witness: { to: Address; validAfter: string };
+};
+
 export type SettlementIntent = {
   nonce: string;
   streamId: string;
@@ -29,6 +45,7 @@ export type SettlementIntent = {
   payer: Address;
   payTo: Address;
   deadline: number | null;
+  authorization: SettlementAuthorizationRecord | null;
   status: SettlementIntentStatus;
   transactionHash: Hex | null;
   attempts: number;
@@ -55,6 +72,10 @@ export type SettlementIntentRow = {
   payer: string;
   pay_to: string;
   deadline: number | null;
+  signature: string | null;
+  spender: string | null;
+  witness_to: string | null;
+  witness_valid_after: string | null;
   status: string;
   transaction_hash: string | null;
   attempts: number;
@@ -77,6 +98,10 @@ export function encodeSettlementIntent(
     payer: intent.payer,
     pay_to: intent.payTo,
     deadline: intent.deadline,
+    signature: intent.authorization?.signature ?? null,
+    spender: intent.authorization?.spender ?? null,
+    witness_to: intent.authorization?.witness.to ?? null,
+    witness_valid_after: intent.authorization?.witness.validAfter ?? null,
     status: intent.status,
     transaction_hash: intent.transactionHash,
     attempts: intent.attempts,
@@ -100,11 +125,41 @@ export function decodeSettlementIntentRow(
     payer: row.payer as Address,
     payTo: row.pay_to as Address,
     deadline: row.deadline,
+    authorization: decodeAuthorization(row),
     status: row.status as SettlementIntentStatus,
     transactionHash: row.transaction_hash as Hex | null,
     attempts: row.attempts,
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Rebuild the authorization from its four columns.
+ *
+ * All-or-nothing: a row written before these columns existed (or by a
+ * settler path that had no authorization to record) decodes to `null`
+ * rather than to a half-populated struct, so a caller cannot mistake a
+ * legacy row for a settleable one.
+ */
+function decodeAuthorization(
+  row: SettlementIntentRow,
+): SettlementAuthorizationRecord | null {
+  if (
+    row.signature === null ||
+    row.spender === null ||
+    row.witness_to === null ||
+    row.witness_valid_after === null
+  ) {
+    return null;
+  }
+  return {
+    signature: row.signature as Hex,
+    spender: row.spender as Address,
+    witness: {
+      to: row.witness_to as Address,
+      validAfter: row.witness_valid_after,
+    },
   };
 }

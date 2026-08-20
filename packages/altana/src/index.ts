@@ -122,11 +122,19 @@ export {
   selectX402Requirement,
   normalizeRequirement,
 } from "./payment/select.js";
-export { signX402PaymentFor } from "./payment/sign.js";
+export { signX402PaymentFor, MissingSpenderError } from "./payment/sign.js";
 export type {
   SignForRequirementInput,
   SignForRequirementResult,
 } from "./payment/sign.js";
+export {
+  hashPermit2Witness,
+  permit2WitnessDigest,
+  WITNESS_TYPE,
+  WITNESS_TYPEHASH,
+  WITNESS_TYPE_STRING,
+} from "./payment/digest.js";
+export type { Permit2WitnessAuthorization } from "./payment/digest.js";
 export {
   encodeB402Envelope,
   base64JsonEncode,

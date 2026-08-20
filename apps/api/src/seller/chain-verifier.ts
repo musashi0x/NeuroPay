@@ -72,7 +72,9 @@ export function createChainBackedVerifier(
   // verifier's behaviour directly).
   if (typeof options.publicClient.getCode === "function") {
     void assertPermit2Deployed(
-      options.publicClient as unknown as Parameters<typeof assertPermit2Deployed>[0],
+      options.publicClient as unknown as Parameters<
+        typeof assertPermit2Deployed
+      >[0],
       options.chainId,
     ).catch((err: unknown) => {
       logger.warn(

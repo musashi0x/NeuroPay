@@ -61,6 +61,28 @@ export type SettlementInput = {
    * is congested past 480s.
    */
   deadline?: number | null;
+  /**
+   * The buyer's real authorization.
+   *
+   * Permit2 recomputes the signed digest from `spender`, `nonce`,
+   * `deadline`, the permitted token/amount, and the witness, then checks
+   * it against `signature`. Every one of those has to be the buyer's own
+   * value — a fabricated or defaulted field reverts the transaction
+   * unconditionally. Optional on the type only so the in-memory settler
+   * (which submits nothing) can still be driven from tests; the chain
+   * settler refuses an input without it.
+   */
+  authorization?: SettlementAuthorization | null;
+};
+
+/** The buyer-signed Permit2 authorization, threaded verify → queue → chain. */
+export type SettlementAuthorization = {
+  /** The 98-byte nested ERC-1271 envelope the session key produced. */
+  signature: Hex;
+  /** The signed `spender` — must equal the settler EOA calling Permit2. */
+  spender: Address;
+  /** `Witness(address to,uint256 validAfter)`, bound into the signature. */
+  witness: { to: Address; validAfter: string };
 };
 
 /** What `submitSettle` returns on the happy path. */
@@ -84,6 +106,24 @@ export class SettlementRevertedError extends Error {
     super(message);
     this.name = "SettlementRevertedError";
     this.transactionHash = transactionHash;
+  }
+}
+
+/**
+ * Thrown when an intent cannot produce a valid `permitWitnessTransferFrom`
+ * call at all — no buyer authorization, a spender that is not this
+ * settler, or a missing deadline.
+ *
+ * Terminal by construction: retrying cannot conjure the missing signed
+ * data, and submitting anyway would spend gas on a transaction Permit2 is
+ * certain to revert. Recorded as `settlement-reverted` so the operator
+ * console shows it in the same bucket as an on-chain rejection, which is
+ * what it would have been.
+ */
+export class SettlementUnsettleableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SettlementUnsettleableError";
   }
 }
 
@@ -419,6 +459,7 @@ export function settlementIntentFromInput(
     payer: s.payer,
     payTo: s.payTo,
     deadline: s.deadline ?? null,
+    authorization: s.authorization ?? null,
     status: "pending",
     transactionHash: null,
     attempts: 0,
@@ -441,6 +482,9 @@ function settlementInputFromIntent(intent: SettlementIntent): SettlementInput {
     payTo: intent.payTo,
   };
   if (intent.deadline !== null) input.deadline = intent.deadline;
+  // Reconciliation after a crash has to resubmit a *settleable* tx, so
+  // the authorization comes back out of the outbox with everything else.
+  if (intent.authorization !== null) input.authorization = intent.authorization;
   return input;
 }
 
@@ -469,7 +513,8 @@ async function submitWithRetry(
       lastCause = cause;
       if (
         cause instanceof SettlerOutOfGasError ||
-        cause instanceof SettlementRevertedError
+        cause instanceof SettlementRevertedError ||
+        cause instanceof SettlementUnsettleableError
       ) {
         throw cause;
       }

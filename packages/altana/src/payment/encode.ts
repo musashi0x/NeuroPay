@@ -71,13 +71,19 @@ export type EncodeB402Input = {
 export type B402Envelope = {
   /** The decoded payload — what a merchant's JSON parser sees. */
   decoded: X402PaymentPayload & {
-    payload: {
+    payload: Record<string, unknown> & {
       from: Address;
-      permit: {
+      /**
+       * The SDK's Permit2 struct (`permitted`, `spender`, `nonce`,
+       * `deadline`, `witness`) with `from` and `signature` merged on top.
+       * Every one of those fields is an input to
+       * `permitWitnessTransferFrom`, so none of them may be dropped.
+       */
+      permit: Record<string, unknown> & {
         from: Address;
         signature: string;
       };
-      permit2Authorization: {
+      permit2Authorization: Record<string, unknown> & {
         from: Address;
         signature: string;
       };
@@ -96,14 +102,16 @@ export type B402Envelope = {
  *  1. Normalize `resource` to a non-null object form with `url`
  *     non-empty — required by b402 merchants, who reject an absent
  *     or empty resource with "payment header resource is null".
- *  2. Project the SDK's `payload` (which carries `signature` plus the
- *     typed-data fields the rail needs) into the b402 shape — both
- *     `permit + from` and `permit2Authorization` with nested `from`.
- *  3. Set `from` to the requirement's payTo — actually, to the
- *     smart-account wallet. Wait — that's wrong: `from` is the *payer*,
- *     not the recipient. The smart-account wallet is the payer.
- *     The wallet address comes from the input; the recipient is the
- *     requirement's `payTo`. We wire `from = walletAddress`.
+ *  2. Merge `from` and `signature` **into** the SDK's own `permit` and
+ *     `permit2Authorization` objects. This is a merge, never a
+ *     replacement: those objects carry `permitted` (token + amount),
+ *     `spender`, `nonce`, `deadline`, and `witness`, and Permit2
+ *     recomputes the signed digest from exactly those values at
+ *     settlement time. Dropping any of them makes the envelope
+ *     unsettleable.
+ *  3. `from` is the *payer* — the smart-account wallet, passed in as
+ *     `payerAddress`. The recipient (`payTo`) is bound separately inside
+ *     the permit's witness.
  *  4. Re-base64 the JSON payload for the headers.
  *
  * The signature is propagated from the SDK payload unchanged — it's
@@ -115,17 +123,29 @@ export function encodeB402Envelope(
 ): B402Envelope {
   const signature = extractSignature(input.signedPayload);
   const resource = pickResource(input.requirement, input.resourceUrl);
+  const inner = input.signedPayload.payload as Record<string, unknown>;
+
+  // The SDK emits both keys for the permit2 rails and neither for
+  // eip3009 (which carries `authorization` instead). Fall back to
+  // whichever is present so one rail's absence never invents an empty
+  // object the merchant would then reject as malformed.
+  const sdkPermit =
+    asRecord(inner["permit"]) ?? asRecord(inner["permit2Authorization"]);
+  const sdkAuthorization =
+    asRecord(inner["permit2Authorization"]) ?? asRecord(inner["permit"]);
 
   const decoded: B402Envelope["decoded"] = {
     ...input.signedPayload,
     payload: {
-      ...(input.signedPayload.payload as Record<string, unknown>),
+      ...inner,
       from: payerAddress,
       permit: {
+        ...(sdkPermit ?? {}),
         from: payerAddress,
         signature,
       },
       permit2Authorization: {
+        ...(sdkAuthorization ?? {}),
         from: payerAddress,
         signature,
       },
@@ -141,6 +161,13 @@ export function encodeB402Envelope(
   const header = base64JsonEncode(decoded);
 
   return { decoded, header };
+}
+
+/** Narrow an unknown JSON value to a plain object, or `null`. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 /**

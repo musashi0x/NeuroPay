@@ -23,6 +23,8 @@ import { createSeller, type Seller } from "./index.js";
 
 const TOKEN = "0x55d398326f99059f775a46c830bb1ec1b4f2e75d" as Address;
 const PAY_TO = "0x000000000000000000000000000000000000d3ad" as Address;
+/** The settler EOA published as the Permit2 spender; never `payTo`. */
+const SETTLER: Address = "0x5e771e4000000000000000000000000000005e77";
 const PAYER = "0x000000000000000000000000000000000000c0de" as Address;
 
 function fixtures() {
@@ -64,6 +66,7 @@ function buildSeller(opts: { metering?: MeteringConfig } = {}): {
       chainId: 97,
       token: TOKEN,
       tokenDecimals: 18,
+      settlerAddress: SETTLER,
       maxSecondsPerSegment: 60,
       maxUnitsPerSegment: 1000,
     },

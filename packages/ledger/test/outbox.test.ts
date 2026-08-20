@@ -22,6 +22,7 @@ function intent(
     payer: PAYER,
     payTo: PAY_TO,
     deadline: null,
+    authorization: null,
     status: "pending",
     transactionHash: null,
     attempts: 0,

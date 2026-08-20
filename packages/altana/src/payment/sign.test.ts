@@ -43,6 +43,7 @@ import { signX402PaymentFor } from "./sign.js";
 import {
   NESTED_ERC1271_BYTES,
   PERMIT2_REQUIREMENT,
+  SETTLER_ADDRESS,
   WALLET_ADDRESS,
   makeSession,
 } from "./__fixtures__/index.js";
@@ -135,7 +136,14 @@ describe("signX402PaymentFor — b402 envelope wiring", () => {
     expect(sdkReq.network).toBe(REQ.network);
     expect(sdkReq.asset).toBe(REQ.asset);
     expect(sdkReq.extra.assetTransferMethod).toBe("permit2-exact");
-    expect(sdkReq.extra.spenderAddress).toBe(REQ.payTo);
+    // The spender is the merchant's settler EOA, taken from the 402 —
+    // NOT `payTo`. Permit2 checks the signed spender against msg.sender
+    // of the settlement call, which `payTo` never is.
+    expect(sdkReq.extra.spenderAddress).toBe(SETTLER_ADDRESS);
+    expect(sdkReq.extra.spenderAddress).not.toBe(REQ.payTo);
+    // The merchant's validity window reaches the SDK, so its 3600s
+    // default cannot silently outlive the quoted demand.
+    expect(sdkReq.maxTimeoutSeconds).toBe(REQ.maxTimeoutSeconds);
     // args[2] is the sign options.
     expect(args[2]!.now).toBe(1_700_000_000);
     expect(args[2]!.permit2Nonce).toBe(12345n);

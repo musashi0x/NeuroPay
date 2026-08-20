@@ -29,6 +29,7 @@ export type {
   StreamView,
 } from "./stream.js";
 export type {
+  X402AssetTransferMethod,
   X402Extra,
   X402PaymentRequired,
   X402Rail,

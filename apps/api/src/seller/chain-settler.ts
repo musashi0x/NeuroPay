@@ -35,6 +35,7 @@ import {
   recordPaymentSettlementLost,
   recordPaymentSettlementSubmitted,
 } from "@neuro-pay/ledger";
+import { hashPermit2Witness, WITNESS_TYPE_STRING } from "@neuro-pay/altana";
 import { logger } from "../logger.js";
 import {
   type SettlementInput,
@@ -43,6 +44,7 @@ import {
   SettlerOutOfGasError,
   SettlementLostError,
   SettlementRevertedError,
+  SettlementUnsettleableError,
 } from "./settle.js";
 
 /** The Permit2 ABI fragment for `permitWitnessTransferFrom`. */
@@ -110,7 +112,12 @@ export type PublicClientLikeForSettler = {
 export type ChainBackedSettlerOptions = {
   walletClient: WalletClientLike;
   publicClient: PublicClientLikeForSettler;
-  spenderAddress: Address;
+  /**
+   * The EOA this settler submits from. Permit2 checks the signed
+   * `spender` against `msg.sender`, so this must be the same address the
+   * seller advertised in the 402's `extra.spenderAddress`.
+   */
+  settlerAddress: Address;
   permit2Address: Address;
   chainId: number;
   ledger: LedgerStore;
@@ -124,6 +131,9 @@ type PendingSettlement = {
   streamId: string;
   nonce: string;
   deadline: number | null;
+  sessionPublicKey: Hex | null;
+  token: Address;
+  tokenDecimals: number;
 };
 
 /**
@@ -141,8 +151,37 @@ export function createChainBackedSettler(
 
   return {
     async submitSettle(input: SettlementInput): Promise<SettlementSubmitted> {
-      const witnessTypeString = witnessTypeStringFor(input.chainId);
-      const witnessHash = witnessPlaceholderHash(input.nonce);
+      // Permit2 recomputes the signed digest from these exact arguments
+      // and checks it against the signature, so there is nothing here we
+      // are allowed to invent. An intent without an authorization is one
+      // the seller could not have verified (or a legacy outbox row from
+      // before the column existed) — refusing loudly beats submitting a
+      // transaction that is guaranteed to revert and burn gas.
+      const authorization = input.authorization ?? null;
+      if (!authorization) {
+        throw new SettlementUnsettleableError(
+          `chain settler: settlement intent ${input.nonce} carries no buyer ` +
+            `authorization (signature/spender/witness). Permit2 would revert.`,
+        );
+      }
+      if (
+        authorization.spender.toLowerCase() !==
+        options.settlerAddress.toLowerCase()
+      ) {
+        throw new SettlementUnsettleableError(
+          `chain settler: permit for ${input.nonce} names spender ` +
+            `${authorization.spender}, but this settler submits as ` +
+            `${options.settlerAddress}. Permit2 binds spender to msg.sender.`,
+        );
+      }
+      if (input.deadline === null || input.deadline === undefined) {
+        throw new SettlementUnsettleableError(
+          `chain settler: settlement intent ${input.nonce} carries no deadline; ` +
+            `the deadline is part of the signed digest and cannot be defaulted.`,
+        );
+      }
+
+      const witnessHash = hashPermit2Witness(authorization.witness);
 
       let transactionHash: Hex;
       try {
@@ -154,19 +193,19 @@ export function createChainBackedSettler(
             {
               permitted: { token: input.token, amount: input.amount },
               nonce: BigInt(input.nonce),
-              deadline: BigInt(
-                input.deadline ??
-                  Math.floor(Date.now() / 1000) + lostTxTimeoutMs,
-              ),
+              deadline: BigInt(input.deadline),
             },
             {
-              to: options.spenderAddress,
+              // The recipient is the witness's `to` — the address the
+              // buyer cryptographically bound. Sending to the spender
+              // would pay the settler its own float.
+              to: authorization.witness.to,
               requestedAmount: input.amount,
             },
             input.payer,
             witnessHash,
-            witnessTypeString,
-            "0x" as Hex,
+            WITNESS_TYPE_STRING,
+            authorization.signature,
           ],
         });
       } catch (cause: unknown) {
@@ -186,6 +225,9 @@ export function createChainBackedSettler(
         streamId: input.streamId,
         nonce: input.nonce,
         deadline: input.deadline ?? null,
+        sessionPublicKey: input.sessionPublicKey,
+        token: input.token,
+        tokenDecimals: input.tokenDecimals,
       });
 
       try {
@@ -382,22 +424,14 @@ function ctxFromMeta(
 ): EventContext {
   return {
     streamId: meta.streamId,
-    sessionPublicKey: null,
+    sessionPublicKey: meta.sessionPublicKey,
     chainId: options.chainId,
-    token: options.permit2Address,
-    tokenDecimals: 18,
+    // The settlement token, carried from the submitted input. Reporting
+    // Permit2's own address here would make every confirm/fail entry
+    // disagree with the submit entry that preceded it.
+    token: meta.token,
+    tokenDecimals: meta.tokenDecimals,
   };
-}
-
-function witnessTypeStringFor(_chainId: number): string {
-  void _chainId;
-  return "Permit2 Witness witness)PayTo(address payTo,uint256 amount)Token(address token,uint256 chainId)Witness(uint256 nonce,uint256 deadline)PermitWitness(bytes32 hash)";
-}
-
-function witnessPlaceholderHash(nonce: string): Hex {
-  const stripped = nonce.replace(/[^0-9a-fA-F]/g, "");
-  const padded = (stripped + "0".repeat(64)).slice(0, 64);
-  return ("0x" + padded) as Hex;
 }
 
 function sleep(ms: number): Promise<void> {

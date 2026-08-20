@@ -8,6 +8,13 @@ import type { Address, SmallestUnits } from "./primitives.js";
  */
 export type X402Rail = "permit2" | "eip3009";
 
+/**
+ * The `extra.assetTransferMethod` label a b402 merchant publishes to say
+ * which on-chain rail its 402 is payable over. The SDK dispatches on this
+ * before it falls back to reading `scheme`.
+ */
+export type X402AssetTransferMethod = "permit2-exact" | "permit2" | "eip3009";
+
 /** Extra typed-data context a merchant may attach to a requirement. */
 export type X402Extra = {
   /** EIP-712 domain name of the verifying contract, when the rail needs one. */
@@ -15,6 +22,18 @@ export type X402Extra = {
   /** EIP-712 domain version, when the rail needs one. */
   version: string | null;
   verifyingContract: Address | null;
+  /**
+   * The address bound as the Permit2 `spender` in the signature.
+   *
+   * Permit2 requires the signed `spender` to equal `msg.sender` of whoever
+   * calls `permitWitnessTransferFrom` — the merchant's settler EOA, which is
+   * a third address distinct from both the payer and `payTo`. A buyer that
+   * guesses this wrong produces a signature that reverts on chain, so the
+   * merchant has to publish it in the 402.
+   */
+  spenderAddress?: Address | null;
+  /** Which rail this option is payable over; the SDK's primary rail selector. */
+  assetTransferMethod?: X402AssetTransferMethod | null;
 };
 
 /**

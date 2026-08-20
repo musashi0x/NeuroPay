@@ -109,19 +109,29 @@ actual settlement — follow the
 
 The repository is mid-build. What the running app does and does not do:
 
-| Area                                               | State                                                                                                            |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                 |
-| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)    |
-| Signature verification                             | Production runtime uses ERC-1271 via Permit2; tests inject a stub verifier                                       |
-| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory                         |
-| On-chain revoke                                    | Wired when `ADMIN_PRIVATE_KEY` + `RPC_URL` are set; local-only with a logged warning otherwise                   |
-| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot |
+| Area                                               | State                                                                                                                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Seller: 402, verify, deliver, ledger, console, SSE | Works end to end                                                                                                                                                                                                        |
+| Buyer payment client (`fetchWithX402`)             | Built and tested. `pnpm --filter @neuro-pay/api demo:real` is the buyer process (needs `SESSION_PRIVATE_KEY`)                                                                                                           |
+| Signature verification                             | Production runtime uses ERC-1271 via Permit2. The seller recomputes the EIP-712 digest itself — the wire carries no hash — so a wrong-chain payment fails the signature check rather than a field compare               |
+| Settlement                                         | Chain-backed settler when `SETTLER_PRIVATE_KEY` + `RPC_URL` are set; otherwise in-memory. The settler EOA is published in every 402 as `extra.spenderAddress`, because Permit2 binds the signed spender to `msg.sender` |
+| On-chain revoke                                    | Wired when `ADMIN_PRIVATE_KEY` + `RPC_URL` are set; local-only with a logged warning otherwise                                                                                                                          |
+| Payment crediting the meter                        | Confirmed settlements call `recordSettle` (capped at `accruedUnpaid`); failed settlements keep the exposure slot                                                                                                        |
 
 Confirmed settlements now credit the meter, so a 402 after a successful
 settle demands only newly accrued unpaid cost. Failed settlements do not
 credit the meter and keep the exposure slot reserved until operator
 retry (P1) or process restart.
+
+**Three addresses, not two.** A Permit2 payment involves the payer (the
+buyer's smart account), the recipient (`payTo`, bound inside the signed
+witness), and the _spender_ — the settler EOA that calls
+`permitWitnessTransferFrom`. Permit2 checks the signed spender against
+that call's `msg.sender`, so the seller publishes its settler address in
+the 402 and refuses any permit signed for a different one. Running
+without `SETTLER_PRIVATE_KEY` advertises `payTo` as the spender, which is
+fine for the in-memory local loop and produces signatures that are **not**
+settleable on chain.
 
 One naming inconsistency: the product copy says USDC, while
 `.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
@@ -272,9 +282,10 @@ on-chain fees.
 
 `/v1/session`'s `status` field is also chain-backed whenever `RPC_URL` is
 set: it reads a live Keystore `isValidKey` check rather than only expiry
-+ the local rail flag, so a session revoked from outside this process
-(another operator run, a different revoke call) shows up as `"revoked"`
-on the next poll.
+
+- the local rail flag, so a session revoked from outside this process
+  (another operator run, a different revoke call) shows up as `"revoked"`
+  on the next poll.
 
 For console work, seed a fake record instead:
 
@@ -314,10 +325,10 @@ The chain config is only needed to exercise payments end to end. Without it, `tr
 
 To mount the payment routes, fill these in `apps/api/.env` (the rest already default to BNB testnet):
 
-| Variable              | Why                                                                     |
-| --------------------- | ----------------------------------------------------------------------- |
-| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                  |
-| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas |
+| Variable              | Why                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `PAY_TO`              | Settlement recipient, bound into every Permit2 witness                                                       |
+| `SETTLER_PRIVATE_KEY` | EOA that submits `permitWitnessTransferFrom`; needs testnet BNB for gas                                      |
 | `ADMIN_PRIVATE_KEY`   | Wallet creation, `grantSession`, rail provisioning (provisioner script), and on-chain revoke (API, optional) |
 
 Use throwaway testnet-only keys. A leaked session key is bounded by the cap and expiry; a leaked admin key is total loss of the wallet. Then follow the [operator checklist](#operator-checklist-chain-97).
@@ -371,15 +382,35 @@ The agent pays for metered work with an Altana session key. A human approves a p
 
    The script prints the smart-account address to fund and every transaction hash. Fund that address from the [BNB testnet faucet](https://www.bnbchain.org/en/testnet-faucet) **before** the grant if the wallet is new.
 
-7. `grantSession` writes to Keystore and costs a fee. The wallet's **first admin action is charged twice** because `initialRegisterKey` rides in the same userOp. Record both the funding hash and the grant hash; the double charge is expected.
-8. Session persistence is byte-exact. The store re-encodes on load and **hard-fails** on mismatch. Do not hand-edit `.data/session.json`. A sloppy JSON round-trip (bigint → number, reordered keys) grants cleanly and then fails every payment.
-9. Start the API and the console:
+7. `grantSession` writes to Keystore and costs a fee. A fresh wallet's first admin action is expected to carry a one-time `initialRegisterKey` cost in the same userOp, so budget for the grant costing more than a steady-state one.
+
+   The measured chain-97 figures so far are grant 968,320 gas, approve-token 127,361, approve-checker 115,737. Those do **not** establish the "charged twice" claim — a grant writes a session key, its spend caps, and its allowlist, while an approve flips one storage slot, so the gap is mostly the grant doing more work. `pnpm --filter @neuro-pay/altana probe:fee` runs the experiment that can settle it (two grants on one fresh wallet, first-ness the only variable). Until it has been run, treat the doubling as unverified.
+
+8. Every operator script records its transaction hashes to the on-chain runbook, so a hash outlives the terminal it was printed in:
 
    ```bash
-   pnpm dev
+   pnpm --filter @neuro-pay/altana runbook
    ```
 
-   Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
+   Backfill anything sent outside the tooling — the faucet funding, most obviously — with `runbook --add <action> <wallet> <txHash>`; gas and block are read from the chain, not typed in.
+
+9. Revoking is the kill switch, and it has its own command:
+
+   ```bash
+   pnpm --filter @neuro-pay/altana revoke -- --dry-run   # read-only: prints current on-chain authority
+   pnpm --filter @neuro-pay/altana revoke -- --yes       # irreversible
+   ```
+
+   It reads authority before, revokes locally then on chain, reads authority after, and records the hash. The after-read is the point: submitting a transaction is not the same claim as the session being dead on chain. Note that an **already-expired** session reads `expired` either way, so the verification is only conclusive while the session is live.
+
+10. Session persistence is byte-exact. The store re-encodes on load and **hard-fails** on mismatch. Do not hand-edit `.data/session.json`. A sloppy JSON round-trip (bigint → number, reordered keys) grants cleanly and then fails every payment.
+11. Start the API and the console:
+
+```bash
+pnpm dev
+```
+
+Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
 
 ### What is bounded, and what is not
 

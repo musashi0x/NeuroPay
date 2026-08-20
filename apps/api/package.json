@@ -25,6 +25,7 @@
     "viem": "catalog:"
   },
   "devDependencies": {
+    "@altananetwork/sdk": "catalog:",
     "@neuro-pay/eslint-config": "workspace:*",
     "@neuro-pay/tsconfig": "workspace:*",
     "@types/node": "^22.18.12",

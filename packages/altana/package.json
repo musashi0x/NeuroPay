@@ -18,7 +18,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "provision": "tsx scripts/provision.ts"
+    "provision": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/provision.ts",
+    "revoke": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/revoke.ts",
+    "probe:fee": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/first-action-fee.ts",
+    "runbook": "tsx --env-file-if-exists=.env --env-file-if-exists=../../apps/api/.env scripts/runbook.ts"
   },
   "dependencies": {
     "@altananetwork/sdk": "catalog:",

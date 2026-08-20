@@ -180,6 +180,10 @@ const SCHEMA_STATEMENTS = [
     payer TEXT NOT NULL,
     pay_to TEXT NOT NULL,
     deadline INTEGER,
+    signature TEXT,
+    spender TEXT,
+    witness_to TEXT,
+    witness_valid_after TEXT,
     status TEXT NOT NULL,
     transaction_hash TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -237,9 +241,58 @@ const SELECT_DELIVERY_NONCES = `SELECT nonce FROM delivery_records`;
 
 const INSERT_INTENT = `INSERT OR IGNORE INTO settlement_intents (
   nonce, stream_id, session_public_key, chain_id, token, token_decimals,
-  amount, payer, pay_to, deadline, status, transaction_hash, attempts,
+  amount, payer, pay_to, deadline,
+  signature, spender, witness_to, witness_valid_after,
+  status, transaction_hash, attempts,
   last_error, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+/**
+ * Additive column migrations for files created before a column existed.
+ *
+ * `CREATE TABLE IF NOT EXISTS` silently leaves an older table alone, so a
+ * ledger written by a previous version keeps its old column set and every
+ * insert against the new statement fails. Each entry here is applied only
+ * when `PRAGMA table_info` says the column is missing, which makes the
+ * whole set idempotent and safe to run on every open.
+ *
+ * Additive only: no drops, no renames, no type changes. Anything beyond
+ * that needs the real versioned-migration machinery.
+ */
+const COLUMN_MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  {
+    table: "settlement_intents",
+    column: "signature",
+    ddl: "ALTER TABLE settlement_intents ADD COLUMN signature TEXT",
+  },
+  {
+    table: "settlement_intents",
+    column: "spender",
+    ddl: "ALTER TABLE settlement_intents ADD COLUMN spender TEXT",
+  },
+  {
+    table: "settlement_intents",
+    column: "witness_to",
+    ddl: "ALTER TABLE settlement_intents ADD COLUMN witness_to TEXT",
+  },
+  {
+    table: "settlement_intents",
+    column: "witness_valid_after",
+    ddl: "ALTER TABLE settlement_intents ADD COLUMN witness_valid_after TEXT",
+  },
+];
+
+/** Apply every column migration whose column is not already present. */
+function applyColumnMigrations(db: DatabaseSync): void {
+  for (const migration of COLUMN_MIGRATIONS) {
+    const columns = db
+      .prepare(`PRAGMA table_info(${migration.table})`)
+      .all() as { name: string }[];
+    if (columns.length === 0) continue;
+    if (columns.some((c) => c.name === migration.column)) continue;
+    db.exec(migration.ddl);
+  }
+}
 
 const SELECT_INTENT = `SELECT * FROM settlement_intents WHERE nonce = ?`;
 
@@ -281,6 +334,7 @@ export function openLedgerStore(options: LedgerStoreOptions): LedgerStore {
   for (const statement of SCHEMA_STATEMENTS) {
     db.exec(statement);
   }
+  applyColumnMigrations(db);
 
   return new LedgerStoreImpl(
     db,
@@ -520,6 +574,10 @@ class LedgerStoreImpl implements LedgerStore {
         row.payer,
         row.pay_to,
         row.deadline,
+        row.signature,
+        row.spender,
+        row.witness_to,
+        row.witness_valid_after,
         row.status,
         row.transaction_hash,
         row.attempts,

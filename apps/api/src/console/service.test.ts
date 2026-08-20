@@ -81,6 +81,7 @@ function harness(
     config: {
       metering: cfg.metering,
       payTo: cfg.chain.payTo,
+      settlerAddress: cfg.chain.payTo,
       chainId: cfg.chain.chainId,
       token: cfg.chain.token,
       tokenDecimals: cfg.chain.tokenDecimals,

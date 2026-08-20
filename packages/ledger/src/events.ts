@@ -163,7 +163,16 @@ export type PaymentVerifiedInput = WriteInput & {
  */
 export type PaymentRejectedInput = WriteInput & {
   amount: SmallestUnits | null;
-  nonce: string;
+  /**
+   * The authorization nonce, when there is one.
+   *
+   * `null` is a real case, not a shortcut: an envelope rejected for a
+   * malformed header or a revoked session is refused *before* a nonce
+   * can be parsed out of it. Writing a placeholder would put a nonce
+   * into `lookupByNonce`'s index that no buyer ever sent, so the absence
+   * is recorded honestly instead.
+   */
+  nonce: string | null;
   classification: PaymentFailureClassification;
   detail?: string | null;
   timestamp?: string;
