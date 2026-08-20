@@ -90,12 +90,31 @@ Discovered by running the real signed-payment path against a funded BNB testnet 
 
 ## P1 — security and access control
 
-- [ ] Add authentication and authorization for console APIs.
-- [ ] Protect the revoke endpoint with explicit operator authorization and audit logging.
-- [ ] Confirm no endpoint, log, ledger row, browser bundle, or error response exposes private/admin/session key material.
-- [ ] Add rate limiting and abuse controls for stream creation and segment requests.
-- [ ] Add limits and cleanup for abandoned clients and excessive concurrent streams.
-- [ ] Review CORS and deployment defaults for non-local environments; keep the allowlist explicit and never default to `*`.
+> **Status 2026-08-20:** complete. Verified live against a running API with
+> `CONSOLE_API_TOKEN` set: every console route answers 401 without a token
+> and with a wrong one, the buyer routes stay open, and the stream ceiling
+> refuses past its limit with `Retry-After`.
+
+- [x] Add authentication and authorization for console APIs. _(`apps/api/src/auth.ts`: bearer token from `CONSOLE_API_TOKEN`, compared with `timingSafeEqual` and no early return on a length mismatch. A token shorter than 32 chars is fatal rather than a silent downgrade — an operator who set the variable meant to turn auth on. The guard is mounted on the console router, not a path prefix, because `GET /v1/streams` (operator) and `POST /v1/streams` (buyer) share a path and differ only by method; `auth.test.ts` pins that split in both directions. Buyer routes stay unauthenticated by design: a buyer proves itself by paying, which is a stronger claim than a shared secret.)_
+- [x] Protect the revoke endpoint with explicit operator authorization and audit logging. _(Both revoke routes now sit behind the token. The ledger already recorded the outcome as `session.revoked`; the routes now also log the *request* at warn with its request id, so a revoked session is traceable to the call that ended it.)_
+- [x] Confirm no endpoint, log, ledger row, browser bundle, or error response exposes private/admin/session key material. _(`apps/api/src/no-key-material.test.ts` plants sentinel secrets in the environment, drives all ten routes including the 404 and a deliberately-throwing 500, and asserts no body or header echoes them, prefixed or bare. It also walks `apps/web/src` for a `NEXT_PUBLIC_*` variable whose name implies a secret, and for `CONSOLE_API_TOKEN` in any `"use client"` file — the realistic way this regresses.)_
+- [x] Add rate limiting and abuse controls for stream creation and segment requests. _(`apps/api/src/rate-limit.ts`: per-caller token buckets, refilling continuously so a caller cannot spend a full allowance either side of a window boundary. Separate buckets per surface — stream creation is rarer and costlier (30/min) than the segment hot path (600/min). `X-Forwarded-For` is ignored unless a proxy is explicitly trusted, since a client can set it itself and would otherwise mint a fresh identity per request. 429 carries `Retry-After`.)_
+- [x] Add limits and cleanup for abandoned clients and excessive concurrent streams. _(`SellerConfig.maxConcurrentStreams`, from `MAX_CONCURRENT_STREAMS`. Rate and concurrency are different bounds and both are needed: a slow, patient opener never trips the bucket but still accumulates. The ceiling counts *live* streams so an ended record does not hold a slot it stopped using; `StreamCapacityError` maps to 503 + `Retry-After` rather than the shutdown 503, because it resolves on its own. The idle sweep for abandoned streams already existed.)_
+- [x] Review CORS and deployment defaults for non-local environments; keep the allowlist explicit and never default to `*`. _(Already correct — `resolveCorsOrigin` refuses `*` even when written explicitly — but it was untested. Now covered, and `Authorization` was added to `allowHeaders` or the console preflight would reject every request before it was sent.)_
+
+### Console auth changed the web app too
+
+The console is a client component, so with the API enforcing a token the
+browser would have to hold one. It must not: anything reachable from
+client code is in the bundle, and `EventSource` cannot send headers at
+all. `apps/web/src/app/api/console/[...path]/route.ts` is a same-origin
+proxy that keeps the token server-side and forwards an **allowlist** of
+console paths — a pass-through proxy would let the browser reach the
+buyer routes through a credential it was never given.
+
+Set `CONSOLE_API_TOKEN` on both the API and the web app (same value; see
+each `.env.example`). Leaving it unset keeps the console open and logs a
+warning at boot, which is fine locally and never fine deployed.
 
 ## P2 — observability and operations
 

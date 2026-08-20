@@ -412,6 +412,53 @@ pnpm dev
 
 Seller + console API: [http://localhost:4000](http://localhost:4000) · blotter: [http://localhost:3000/console](http://localhost:3000/console)
 
+### Securing the console
+
+Every console route — session policy, payment history, and the revoke
+kill switch — requires an operator bearer token. Generate one and set it
+on **both** the API and the web app:
+
+```bash
+openssl rand -hex 32
+```
+
+```
+apps/api/.env       CONSOLE_API_TOKEN=<token>
+apps/web/.env.local CONSOLE_API_TOKEN=<token>   # same value, server-side only
+```
+
+Leaving it unset keeps the console open and logs a warning at boot.
+That is fine on a local box and never fine in a deployment: anyone who
+can reach the port can read your payment history and revoke the session.
+A token under 32 characters is refused outright rather than accepted
+weakly.
+
+`CONSOLE_API_TOKEN` must never be `NEXT_PUBLIC_`-prefixed. Next inlines
+those into client JavaScript, which would publish the kill switch to
+every visitor. The browser never holds it: the console talks to a
+same-origin proxy at `/api/console/*` that adds the header server-side
+and forwards only an allowlist of console paths.
+
+The **buyer** routes (`POST /v1/streams`, `GET /v1/streams/:id/next`)
+are deliberately unauthenticated. A buyer proves itself by paying, which
+is a stronger claim than a shared secret, and requiring a token there
+would break every third-party b402 client. They are bounded by abuse
+controls instead:
+
+| Control                 | Default            | Env                      |
+| ----------------------- | ------------------ | ------------------------ |
+| Stream creation rate    | 30/min per caller  | —                        |
+| Segment request rate    | 600/min per caller | —                        |
+| Concurrent live streams | unbounded          | `MAX_CONCURRENT_STREAMS` |
+
+Rate and concurrency are different bounds and you want both: a burst
+trips the rate limit without holding many streams, and a slow, patient
+opener never trips it but still accumulates. Over either limit the API
+answers 429 or 503 with `Retry-After`.
+
+Behind more than one replica these limits are per-replica. A real
+deployment wants a shared store or an edge limiter.
+
 ### What is bounded, and what is not
 
 | Failure                     | Bound                                                                               | What is not guaranteed                                              |
