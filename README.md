@@ -248,6 +248,24 @@ or settlement works. The witness fields (payTo, token, chainId, amount,
 deadline) are filled honestly, because the seller checks each one before
 the verifier ever runs.
 
+> **Pin `SESSION_STORE_PATH` when provisioning.** The script resolves it
+> relative to _its own_ working directory, so running it through
+> `pnpm --filter @neuro-pay/altana` writes the record under
+> `packages/altana/` while the API reads it from `apps/api/.data/`. The
+> grant lands on chain either way and the console then answers 404 for a
+> session that demonstrably exists, which is a confusing thing to debug.
+> Pass an absolute path:
+>
+> ```bash
+> SESSION_STORE_PATH=$PWD/apps/api/.data/session.json \
+>   pnpm --filter @neuro-pay/altana provision
+> ```
+>
+> A revoked session key stays **registered** in the keystore, so a later
+> grant with the same `SESSION_PRIVATE_KEY` fails with
+> `KeyStore: key already registered`. Replacing a session means a new
+> key, not a re-grant.
+
 ### Signed payments (`pnpm demo:real`)
 
 `apps/api/scripts/demo-real-signing.ts` is the buyer that actually signs.
