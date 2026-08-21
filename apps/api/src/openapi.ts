@@ -123,6 +123,23 @@ export const openApiDocument = {
         },
       },
       Error: errorBody,
+      AutoRevokeOnFailureView: {
+        type: "object",
+        required: ["enabled", "lastFiredAt"],
+        properties: {
+          enabled: {
+            type: "boolean",
+            description:
+              "Whether the runtime auto-revoke safety net is armed. Process-local; defaults to false on restart.",
+          },
+          lastFiredAt: {
+            type: ["string", "null"],
+            format: "date-time",
+            description:
+              "ISO-8601 wall-clock time of the most recent threshold crossing, or null if the watcher has never fired.",
+          },
+        },
+      },
     },
   },
   paths: {
@@ -282,6 +299,55 @@ export const openApiDocument = {
         summary: "Retry on-chain revoke",
         security: bearer,
         responses: { "200": { description: "RevokeResult" } },
+      },
+    },
+    "/v1/session/auto-revoke": {
+      get: {
+        tags: ["console"],
+        summary: "Read the auto-revoke-on-failure flag state",
+        security: bearer,
+        responses: {
+          "200": {
+            description: "AutoRevokeOnFailureView",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AutoRevokeOnFailureView" },
+              },
+            },
+          },
+          "401": { description: "Missing or wrong operator token" },
+        },
+      },
+      put: {
+        tags: ["console"],
+        summary: "Arm or disarm the auto-revoke-on-failure safety net",
+        security: bearer,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["enabled"],
+                properties: {
+                  enabled: { type: "boolean" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "New AutoRevokeOnFailureView",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AutoRevokeOnFailureView" },
+              },
+            },
+          },
+          "400": { description: "Body is not { enabled: boolean }" },
+          "401": { description: "Missing or wrong operator token" },
+        },
       },
     },
     "/v1/settlements/{nonce}/retry": {
