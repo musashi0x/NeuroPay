@@ -6,6 +6,7 @@ import { fetchSnapshot, revokeSession } from "@/lib/api";
 import { BudgetPanel } from "@/components/console/BudgetPanel";
 import { ConsoleHeader } from "@/components/console/ConsoleHeader";
 import { HistoryPanel } from "@/components/console/HistoryPanel";
+import { AutoRevokeSwitch } from "@/components/console/AutoRevokeSwitch";
 import { MuteToastsRow } from "@/components/console/MuteToastsRow";
 import { RevokeSwitch } from "@/components/console/RevokeSwitch";
 import { SessionPanel } from "@/components/console/SessionPanel";
@@ -79,6 +80,7 @@ function ConsoleBody() {
         loadingMore={loadingMore}
         onLoadMore={loadMore}
       />
+      <AutoRevokeSwitch />
       <MuteToastsRow />
       <RevokeSwitch
         confirming={confirming}

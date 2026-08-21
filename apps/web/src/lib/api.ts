@@ -1,9 +1,11 @@
 import type {
+  AutoRevokeOnFailureView,
   BudgetState,
   ConsoleSnapshot,
   LedgerEntry,
   RevokeResult,
   SessionPolicyView,
+  SetAutoRevokeRequest,
   StreamView,
 } from "@neuro-pay/types";
 import { reviveWire } from "./wire";
@@ -89,6 +91,53 @@ export async function revokeSession(): Promise<RevokeResult> {
     throw new Error(`revoke failed with ${response.status}`);
   }
   return (await response.json()) as RevokeResult;
+}
+
+/**
+ * Read the runtime auto-revoke-on-failure state.
+ *
+ * The console reaches this through the same `/api/console` proxy the
+ * rest of the operator routes use. A 404 from the proxy means the
+ * watcher is not wired in this deployment; the caller renders a
+ * "not configured" state rather than throwing.
+ */
+export async function fetchAutoRevoke(): Promise<AutoRevokeOnFailureView> {
+  const response = await fetch(`${CONSOLE_BASE}/v1/session/auto-revoke`, {
+    cache: "no-store",
+  });
+  if (response.status === 404) {
+    throw new Error("auto-revoke watcher is not wired");
+  }
+  if (!response.ok) {
+    throw new Error(
+      `auto-revoke fetch failed with ${response.status}`,
+    );
+  }
+  return reviveWire(await response.json()) as AutoRevokeOnFailureView;
+}
+
+/**
+ * Arm or disarm the auto-revoke safety net. The PUT body is the
+ * `SetAutoRevokeRequest` shape; the response is the new state.
+ */
+export async function setAutoRevoke(
+  body: SetAutoRevokeRequest,
+): Promise<AutoRevokeOnFailureView> {
+  const response = await fetch(`${CONSOLE_BASE}/v1/session/auto-revoke`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 404) {
+    throw new Error("auto-revoke watcher is not wired");
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `auto-revoke set failed with ${response.status}: ${text}`,
+    );
+  }
+  return reviveWire(await response.json()) as AutoRevokeOnFailureView;
 }
 
 export function openConsoleEvents(
