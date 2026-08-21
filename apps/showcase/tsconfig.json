@@ -1,0 +1,10 @@
+{
+  "extends": "@neuro-pay/tsconfig/nextjs.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "next-env.d.ts", "next.config.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,183 @@
+/*
+ * Page chrome — minimal, dark, monospace where it matters.
+ *
+ * The showcase is a single-purpose page; the only job is to make the
+ * Run button, the live segment log, and the classified refusals easy
+ * to read. No carousel, no WebGL.
+ */
+:root {
+  --bg: #05060a;
+  --fg: #e6e8f0;
+  --muted: #8a8fa3;
+  --line: #1b1e2a;
+  --accent: #6fd2c5;
+  --bad: #ff6f87;
+  --bad-wash: #2a1418;
+  --good: #6fd2c5;
+  --good-wash: #102624;
+  --warn: #e6b566;
+  --warn-wash: #2a1f0e;
+  --font: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  margin: 0;
+  padding: 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: inherit;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  padding: 0.75rem 1.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+button.primary:disabled {
+  background: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  padding: 1rem;
+  border-radius: 2px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.kv {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+.kv .k {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+}
+.kv .v {
+  font-family: inherit;
+}
+
+.log {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 1rem;
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 0.85rem;
+  background: #0a0c12;
+}
+
+.log .entry {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.log .entry:last-child {
+  border-bottom: 0;
+}
+
+.tag {
+  font-size: 0.7rem;
+  letter-spacing: 0.15em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.tag.free {
+  background: var(--good-wash);
+  color: var(--good);
+}
+.tag.paid {
+  background: var(--warn-wash);
+  color: var(--warn);
+}
+.tag.refused {
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+.tag.opened {
+  background: var(--line);
+  color: var(--fg);
+}
+.tag.budget {
+  background: var(--line);
+  color: var(--fg);
+}
+.tag.done {
+  background: var(--good-wash);
+  color: var(--good);
+}
+.tag.error {
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+
+.explorer {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+}
+
+.shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+header.page {
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1.5rem;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    padding: 1rem 0.75rem;
+  }
+  .row {
+    gap: 0.75rem;
+  }
+}

@@ -17,6 +17,11 @@ const ENTRY_ENABLED = carouselConfig.ENTRY?.enabled ?? true;
 // At this viewport width or below we show a plain holding screen instead.
 const MIN_VIEWPORT_WIDTH = 1025; // px
 
+/** Where the showcase lives. Read once at module load. */
+const SHOWCASE_URL =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SHOWCASE_URL) ||
+  "http://localhost:3001";
+
 /** Hidden until the entry animation settles; GSAP fades these in. */
 const hiddenUntilEntry = ENTRY_ENABLED
   ? ({ opacity: 0, visibility: "hidden" } as const)
@@ -235,6 +240,26 @@ export function CarouselSection() {
       >
         {noClick ? "Drag" : "Open"}
       </div>
+
+      {/* Open the client showcase. The server-rendered page is reachable
+          independently of the carousel state, so a plain anchor is fine.
+          The URL is operator-configurable, defaulting to the showcase dev
+          server. A missing/unreachable showcase does not break the landing
+          page — the anchor just navigates to it. */}
+      <a
+        href={SHOWCASE_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="fixed z-50 cursor-pointer font-mono text-[11px] tracking-[0.2em] whitespace-nowrap text-white uppercase mix-blend-exclusion transition-opacity duration-300"
+        style={{
+          top: "2vh",
+          right: "14vw",
+          opacity: hidden ? 0 : 1,
+          pointerEvents: hidden ? "none" : "auto",
+        }}
+      >
+        Try as agent
+      </a>
 
       {/* Route out to the operator console. Shares the top-right corner with
           the Close button, which only appears in focus mode — the two swap

@@ -289,7 +289,42 @@ Prices must be non-zero or nothing is ever charged: `createSeller`
 defaults every price to zero, so accrual never reaches
 `SETTLEMENT_THRESHOLD` and no 402 is generated. Set `PRICE_PER_UNIT` (and
 optionally `PRICE_PER_CALL` / `PRICE_PER_SECOND`, all in smallest units)
-in `apps/api/.env`; `.env.example` ships dev-scale values.
+in `apps/api/.env`; the example env file ships dev-scale values.
+
+### Try as the agent (`apps/showcase`)
+
+`pnpm demo:real` is the on-ramp for an operator. The visitor-facing
+demo is `apps/showcase`: a third app whose server runs the same
+`fetchWithX402` loop behind a one-page UI. The browser never sees a
+session key — the BFF holds it; the page shows the live segment log,
+paid amounts, and classified refusals.
+
+```bash
+# Terminal 1: API + chain + persisted session.
+pnpm --filter @neuro-pay/api dev
+
+# Terminal 2: provision once, with the session key you also load below.
+SESSION_PRIVATE_KEY=0x... pnpm --filter @neuro-pay/altana provision
+
+# Terminal 3: the showcase itself.
+SESSION_PRIVATE_KEY=0x... \
+  SESSION_STORE_PATH=$PWD/apps/api/.data/session.json \
+  pnpm --filter @neuro-pay/showcase dev
+# -> http://localhost:3001
+```
+
+The landing page (`apps/web`) exposes a **Try as agent** link that
+opens this URL. The link target is `NEXT_PUBLIC_SHOWCASE_URL` on the
+web side, defaulting to `http://localhost:3001`. A missing session,
+missing key, or unreachable seller all render the page (with empty
+states) instead of breaking the link.
+
+The showcase, the operator console, and `pnpm demo:real` are three
+ways to drive the same buyer code path:
+
+- **Showcase** — UI, browser-facing, no terminal.
+- **Console** — operator blotter, reads the ledger, no private key.
+- **`pnpm demo:real`** — script, the canonical reference for integration.
 
 ### Seeding a session (`pnpm seed:session`)
 
