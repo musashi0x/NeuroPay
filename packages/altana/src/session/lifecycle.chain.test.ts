@@ -82,6 +82,7 @@ describe.skipIf(!chainAvailable())("chain-facing configuration guards", () => {
       chainId: 97,
       rpcUrl,
       token: TOKEN,
+      tokenSymbol: "USDT",
       tokenDecimals: 18,
       payTo: PAY_TO,
     };
@@ -149,6 +150,12 @@ describe.skipIf(!chainAvailable())("chain-facing configuration guards", () => {
     await expect(
       buildAltanaClient({ ...chainConfig(chain.rpcUrl), tokenDecimals: 6 }),
     ).rejects.toThrow(/decimals/i);
+  });
+
+  it("rejects a config whose symbol disagrees with the contract", async () => {
+    await expect(
+      buildAltanaClient({ ...chainConfig(chain.rpcUrl), tokenSymbol: "npUSD" }),
+    ).rejects.toThrow(/TOKEN_SYMBOL/i);
   });
 
   it("reads authority for an unknown session as revoked", async () => {

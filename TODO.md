@@ -169,16 +169,24 @@ Two follow-ups this left open, neither blocking:
 
 ## P2 — product and API completeness
 
-- [ ] Resolve the USDC/USDT naming inconsistency between product copy and BNB testnet configuration. _(Wider than first recorded: as of 2026-08-20 the configured token is neither — it is `npUSD`, this project's own test token. Product copy needs to stop naming a specific stablecoin, or the copy needs to say "test token" plainly.)_
-- [ ] Validate token address, symbol, and decimals together at startup, not decimals alone. _(Now demonstrably load-bearing: the address that shipped as the default for months was a near-inert third-party contract nobody here could mint, and decimals-only validation passed it happily every boot. Symbol and address belong in the same check.)_
-- [ ] Add API route schemas and OpenAPI or equivalent generated contract documentation.
-- [ ] Add API contract tests covering web/API wire compatibility and bigint transport revival.
-- [ ] Add explicit multi-session selection if the product moves beyond the current first-session behavior.
-- [ ] Add session provisioning and configuration UI/API if operator-script-only provisioning is no longer sufficient.
-- [ ] Add a real third-party b402 interoperability test against a compatible merchant/facilitator.
-- [ ] Preserve and test the distinct EOA-only facilitator failure classification.
-- [ ] Define supported stream lifecycle states and expose them consistently in API, ledger, and console.
-- [ ] Add pagination/filtering for payment history and stream history as data volume grows.
+> **Status 2026-08-21:** complete. Plan:
+> `openspec/changes/product-api-completeness/`. The default token is
+> named as `npUSD` (test token). Startup and readiness assert address
+> code + symbol + decimals together. `GET /openapi.json` is the HTTP
+> contract; `@neuro-pay/types` owns the bigint codec. Stream status is
+> `active` | `ended` | `abandoned`. Console lists paginate. The product
+> remains one session (deterministic first wallet) and script-provisioned.
+
+- [x] Resolve the USDC/USDT naming inconsistency between product copy and BNB testnet configuration. _(Copy, chrome, and console no longer hardcode a stablecoin. Default is `npUSD` / `TOKEN_SYMBOL`; amounts take the symbol from the API. README names the test token plainly.)_
+- [x] Validate token address, symbol, and decimals together at startup, not decimals alone. _(`TOKEN_SYMBOL` is required. `assertTokenIdentity` / `tokenIdentityProbe` check `getCode`, `symbol()`, and `decimals()`. `TokenIdentityError` names which of the three disagreed.)_
+- [x] Add API route schemas and OpenAPI or equivalent generated contract documentation. _(`apps/api/src/openapi.ts`, served at `GET /openapi.json`. Coverage test asserts every mounted Hono path is in the document.)_
+- [x] Add API contract tests covering web/API wire compatibility and bigint transport revival. _(`toJsonSafe` / `reviveBigints` live in `@neuro-pay/types`; API and web re-export. Round-trip tests in `packages/types/test/wire.test.ts` and `apps/api/src/contract.test.ts`. Nonce stays a string.)_
+- [x] Add explicit multi-session selection if the product moves beyond the current first-session behavior. _(Product has not moved beyond one session. `activeSession` now picks the lexicographically first wallet so the choice is deterministic, covered in `service.test.ts`. No selector UI.)_
+- [x] Add session provisioning and configuration UI/API if operator-script-only provisioning is no longer sufficient. _(Operator scripts remain sufficient. Console empty-state still points at the provisioner. No in-app grant UI.)_
+- [x] Add a real third-party b402 interoperability test against a compatible merchant/facilitator. _(`packages/altana/src/payment/interop.test.ts` runs against `B402_INTEROP_URL` when set, otherwise skips with a reason — same pattern as `pnpm test:chain`.)_
+- [x] Preserve and test the distinct EOA-only facilitator failure classification. _(Retry classifier tests pin that ecrecover-style bodies are `eoa-only-facilitator` and never `verification-failed`.)_
+- [x] Define supported stream lifecycle states and expose them consistently in API, ledger, and console. _(`StreamStatus` = `active` | `ended` | `abandoned` via `streamStatusFromEndReason`. Console shutdown leftovers render as abandoned. Ledger events unchanged: the view is a projection.)_
+- [x] Add pagination/filtering for payment history and stream history as data volume grows. _(`GET /v1/payments?limit&cursor&event&streamId`, `GET /v1/streams?limit&cursor&status`. SSE snapshots cap at 100 newest payments. Console "Load more" follows `nextCursor`.)_
 
 ## Existing OpenSpec tasks still unverified
 
@@ -196,4 +204,4 @@ These tasks remain unchecked in `openspec/changes/add-x402-micropayment-streamin
 
 - [x] Run `pnpm check` on the current checkout after implementation and resolve all lint, typecheck, test, build, and format failures. _(green 2026-08-20 after the local-EVM work: 31 tasks, 587 tests. `pnpm test:chain` is separate and also green — 14 tests across two forked-chain suites — and is not part of `pnpm check` by design.)_
 - [x] Re-run `git status --short` and confirm only intended files are changed. _(2026-08-20: 16 modified, 8 added — all under `apps/api/src/ops/`, `packages/ledger`, `packages/types`, `docs/runbooks/`, and the four docs. No build output, no `.data/`, no stray scratch files.)_
-- [x] Update `README.md` and the OpenSpec tasks/specs whenever an item above is implemented or its scope changes. _(2026-08-20: `README.md` gained a "Health, metrics, and the audit trail" section; `packages/ledger/README.md` gained schema-versioning, audit-trail, and backup/recovery sections; `openspec/specs/api-server/spec.md` gained three requirements — readiness, operator observability endpoints, operator settlement retry. Re-check on the next implemented item; this line is standing, not one-shot.)_
+- [x] Update `README.md` and the OpenSpec tasks/specs whenever an item above is implemented or its scope changes. _(2026-08-21: P2 product/API completeness — `TOKEN_SYMBOL`, OpenAPI, shared wire codec, stream status, pagination. Specs: `openspec/specs/api-server/spec.md`, `openspec/specs/web-app/spec.md`, change `openspec/changes/product-api-completeness/`.)_

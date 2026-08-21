@@ -12,6 +12,8 @@ import type { Address, IsoTimestamp, SmallestUnits } from "./primitives.js";
 export type BudgetState = {
   token: Address;
   tokenDecimals: number;
+  /** ERC-20 symbol of `token`, from config, for display. */
+  tokenSymbol: string;
   /** Window start, aligned to the session's spend `period`. */
   windowStart: IsoTimestamp;
   /** Window end; the window rolls at this instant. */

@@ -27,7 +27,7 @@ import {
   sessionAuthorityProbe,
   settlerBalanceProbe,
   skippedProbe,
-  tokenDecimalsProbe,
+  tokenIdentityProbe,
   type ProbeClient,
 } from "./probes.js";
 import { createOpsService } from "./service.js";
@@ -42,7 +42,8 @@ function client(overrides: Partial<ProbeClient> = {}): ProbeClient {
     getChainId: async () => 97,
     getCode: async () => "0x60",
     getBalance: async () => 10n ** 18n,
-    readContract: async () => 18,
+    readContract: async ({ functionName }) =>
+      functionName === "symbol" ? "npUSD" : 18,
     ...overrides,
   };
 }
@@ -94,19 +95,55 @@ describe("rpcProbe", () => {
   });
 });
 
-describe("tokenDecimalsProbe", () => {
-  it("is ok when decimals match config", async () => {
+describe("tokenIdentityProbe", () => {
+  const expected = { decimals: 18, symbol: "npUSD" };
+
+  it("is ok when code, symbol, and decimals all match", async () => {
     expect(
-      (await verdict(tokenDecimalsProbe(client(), TOKEN, 18))).status,
+      (await verdict(tokenIdentityProbe(client(), TOKEN, expected))).status,
     ).toBe("ok");
   });
 
-  it("is down when the token disagrees with config", async () => {
+  it("is down when the token disagrees on decimals", async () => {
     const result = await verdict(
-      tokenDecimalsProbe(client({ readContract: async () => 6 }), TOKEN, 18),
+      tokenIdentityProbe(
+        client({
+          readContract: async ({ functionName }) =>
+            functionName === "symbol" ? "npUSD" : 6,
+        }),
+        TOKEN,
+        expected,
+      ),
     );
     expect(result.status).toBe("down");
     expect(result.message).toContain("reports 6 decimals");
+  });
+
+  it("is down when the token disagrees on symbol", async () => {
+    const result = await verdict(
+      tokenIdentityProbe(
+        client({
+          readContract: async ({ functionName }) =>
+            functionName === "symbol" ? "USDT" : 18,
+        }),
+        TOKEN,
+        expected,
+      ),
+    );
+    expect(result.status).toBe("down");
+    expect(result.message).toContain("reports symbol USDT");
+  });
+
+  it("is down when the address has no code", async () => {
+    const result = await verdict(
+      tokenIdentityProbe(
+        client({ getCode: async () => "0x" }),
+        TOKEN,
+        expected,
+      ),
+    );
+    expect(result.status).toBe("down");
+    expect(result.message).toContain("no contract code");
   });
 });
 
@@ -292,6 +329,7 @@ describe("deriveAlerts", () => {
     const budget = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-01T01:00:00.000Z",
       periodSeconds: 3600,
@@ -314,6 +352,7 @@ describe("deriveAlerts", () => {
       spendCap: {
         token: TOKEN,
         tokenDecimals: 18,
+        tokenSymbol: "npUSD",
         limit: 10n,
         periodSeconds: 3600,
       },

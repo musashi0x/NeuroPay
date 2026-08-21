@@ -87,6 +87,8 @@ export type BudgetConfig = {
   token: Address;
   /** Decimals of `token`, for human reporting alongside raw units. */
   tokenDecimals: number;
+  /** ERC-20 symbol of `token`. Optional here; the console fills it from chain config. */
+  tokenSymbol?: string;
 };
 
 /**
@@ -207,6 +209,7 @@ export function initializeBudget(
   return {
     token: config.token,
     tokenDecimals: config.tokenDecimals,
+    tokenSymbol: config.tokenSymbol ?? "token",
     windowStart: new Date(Number(windowStartMs)).toISOString(),
     windowEnd: new Date(Number(windowEndMs)).toISOString(),
     periodSeconds: config.spendPeriodSeconds,

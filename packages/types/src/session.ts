@@ -45,6 +45,8 @@ export type SessionPolicyView = {
   spendCap: {
     token: Address;
     tokenDecimals: number;
+    /** ERC-20 symbol of `token`, from config, for display. */
+    tokenSymbol: string;
     /** On-chain cap per `periodSeconds`, in smallest units. */
     limit: SmallestUnits;
     periodSeconds: number;

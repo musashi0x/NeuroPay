@@ -15,6 +15,7 @@ import {
 } from "./rate-limit.js";
 import { consoleRoutes, type ConsoleRouteDeps } from "./console/routes.js";
 import { opsRoutes, readinessRoute, type OpsRouteDeps } from "./ops/routes.js";
+import { openApiDocument } from "./openapi.js";
 import { openStreamRoute, type OpenStreamDeps } from "./routes/streams/open.js";
 import {
   nextSegmentRoute,
@@ -78,6 +79,8 @@ export function createApp(deps: AppDeps = {}): Hono {
 
     return c.json(body);
   });
+
+  app.get("/openapi.json", (c) => c.json(openApiDocument));
 
   if (deps.ops) {
     // Unauthenticated on purpose — see `ops/routes.ts` for what it does

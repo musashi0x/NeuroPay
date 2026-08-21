@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "NeuroPay — Agents buy the services they need",
   description:
-    "A catalog of paid APIs and the gateway that handles payment for them. Every listing carries a price per call: the gateway issues HTTP 402, checks the request against the owner's grant, and settles in USDC on BNB Chain before the call runs.",
+    "A catalog of paid APIs and the gateway that handles payment for them. Every listing carries a price per call: the gateway issues HTTP 402, checks the request against the owner's grant, and settles the configured payment token on BNB Chain before the call runs.",
 };
 
 export const viewport: Viewport = {

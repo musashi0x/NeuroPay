@@ -40,9 +40,13 @@ const ALLOWED: Record<string, readonly string[]> = {
   POST: ["v1/session/revoke", "v1/session/revoke/retry"],
 };
 
-function upstreamFor(method: string, segments: string[]): string | null {
+function upstreamFor(
+  method: string,
+  segments: string[],
+  search: string,
+): string | null {
   const path = segments.join("/");
-  return ALLOWED[method]?.includes(path) ? `${API_URL}/${path}` : null;
+  return ALLOWED[method]?.includes(path) ? `${API_URL}/${path}${search}` : null;
 }
 
 function authHeaders(): HeadersInit {
@@ -58,7 +62,8 @@ async function forward(
   method: "GET" | "POST",
   segments: string[],
 ): Promise<Response> {
-  const upstream = upstreamFor(method, segments);
+  const search = new URL(request.url).search;
+  const upstream = upstreamFor(method, segments, search);
   if (upstream === null) {
     return NextResponse.json(
       { error: { message: "Not Found" } },

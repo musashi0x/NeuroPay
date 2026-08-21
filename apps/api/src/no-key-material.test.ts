@@ -38,8 +38,8 @@ const SECRETS = {
 function consoleStub() {
   return {
     getSession: async () => null,
-    listStreams: async () => [],
-    listPayments: async () => [],
+    listStreams: async () => ({ items: [], nextCursor: null }),
+    listPayments: async () => ({ items: [], nextCursor: null }),
     getBudget: async () => null,
     snapshot: async () => ({
       session: null,
@@ -109,6 +109,7 @@ function assertClean(haystack: string, where: string): void {
 describe("no endpoint echoes key material", () => {
   const routes = [
     ["GET", "/health"],
+    ["GET", "/openapi.json"],
     ["GET", "/v1/session"],
     ["GET", "/v1/streams"],
     ["GET", "/v1/payments"],

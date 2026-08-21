@@ -12,7 +12,7 @@ export type FormattedAmount = {
   human: string;
   /** Exact smallest-unit decimal string. */
   raw: string;
-  /** Human value plus optional symbol, e.g. `"50 USDT"`. */
+  /** Human value plus optional symbol, e.g. `"50 npUSD"`. */
   labelled: string;
 };
 

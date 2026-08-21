@@ -35,11 +35,11 @@ function consoleStub() {
       },
       listStreams: async () => {
         calls.push("listStreams");
-        return [];
+        return { items: [], nextCursor: null };
       },
       listPayments: async () => {
         calls.push("listPayments");
-        return [];
+        return { items: [], nextCursor: null };
       },
       getBudget: async () => {
         calls.push("getBudget");

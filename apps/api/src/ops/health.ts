@@ -44,7 +44,7 @@ export type ProbeStatus = "ok" | "degraded" | "down" | "skipped";
 
 export type ProbeName =
   | "rpc"
-  | "token-decimals"
+  | "token-identity"
   | "permit2"
   | "settler-balance"
   | "ledger"

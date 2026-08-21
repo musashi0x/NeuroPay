@@ -8,6 +8,8 @@ const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const PRIVATE_KEY_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 const INTEGER_PATTERN = /^-?\d+$/;
 const WHOLE_NUMBER_PATTERN = /^\d+$/;
+/** ERC-20 tickers as operators write them: npUSD, USDT, WETH. */
+const TOKEN_SYMBOL_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
 
 /** An unset variable and one set to whitespace are the same thing: absent. */
 function raw(env: EnvSource, key: string): string | undefined {
@@ -27,6 +29,29 @@ export function readString(
   const value = raw(env, key);
   if (value === undefined) {
     throw new MissingConfigError(key, purpose);
+  }
+  return value;
+}
+
+/**
+ * ERC-20 symbol the operator claims `TOKEN_ADDRESS` reports.
+ *
+ * Required — a missing ticker is how copy and config silently name
+ * different tokens. The startup identity check compares this string to
+ * the contract's `symbol()`; guessing it from the address would make
+ * that check tautological.
+ */
+export function readTokenSymbol(
+  env: EnvSource,
+  key: string,
+  purpose: string,
+): string {
+  const value = readString(env, key, purpose);
+  if (!TOKEN_SYMBOL_PATTERN.test(value)) {
+    throw new InvalidConfigError(
+      key,
+      `expected an ERC-20 symbol (1–16 letters/digits, starting with a letter), got "${value}"`,
+    );
   }
   return value;
 }

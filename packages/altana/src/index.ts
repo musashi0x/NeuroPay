@@ -34,12 +34,14 @@ export type {
 
 // Altana client construction.
 export {
+  assertTokenIdentity,
   buildAltanaClient,
   DecimalsMismatchError,
+  TokenIdentityError,
   networkConfigFor,
   publicClientFor,
 } from "./client.js";
-export type { AltanaClientContext } from "./client.js";
+export type { AltanaClientContext, TokenIdentityClient } from "./client.js";
 
 // Wallet provisioning.
 export { provisionWallet } from "./wallet.js";

@@ -102,6 +102,7 @@ describe("loadAppConfig.spendCap ↔ grant boundary (no double-multiply)", () =>
   const env18: EnvSource = {
     RPC_URL: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
     TOKEN_ADDRESS: "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd",
+    TOKEN_SYMBOL: "npUSD",
     TOKEN_DECIMALS: "18",
     PAY_TO: "0x000000000000000000000000000000000000dEaD",
     SETTLER_PRIVATE_KEY:

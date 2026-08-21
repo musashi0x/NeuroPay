@@ -205,6 +205,7 @@ export function makeSession(): Session {
 export const HEALTHY_BUDGET = {
   token: PERMITTED_TOKEN,
   tokenDecimals: 18,
+  tokenSymbol: "npUSD",
   windowStart: "2024-01-01T00:00:00.000Z",
   windowEnd: "2024-01-02T00:00:00.000Z",
   periodSeconds: 86_400,

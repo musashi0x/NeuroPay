@@ -61,6 +61,7 @@ describe("initializeBudget", () => {
       budgetMargin: 0.2,
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
     };
     const state = initializeBudget(config, clockAt(1_700_000_000_000));
 
@@ -84,6 +85,7 @@ describe("initializeBudget", () => {
       budgetMargin: 0.2,
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
     };
     expect(() => initializeBudget(config, clockAt(0))).toThrow(RangeError);
   });
@@ -99,6 +101,7 @@ describe("preSignCheck", () => {
       budgetMargin: 0.2,
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
     };
     const state = {
       ...initializeBudget(config, clockAt(1_700_000_000_000)),
@@ -119,6 +122,7 @@ describe("preSignCheck", () => {
       budgetMargin: 0.2,
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
     };
     const state = {
       ...initializeBudget(config, clockAt(1_700_000_000_000)),
@@ -142,6 +146,7 @@ describe("preSignCheck", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -164,6 +169,7 @@ describe("preSignCheck", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -184,6 +190,7 @@ describe("recordPayment", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -206,6 +213,7 @@ describe("recordPayment", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -229,6 +237,7 @@ describe("budget window rolls", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -254,6 +263,7 @@ describe("budget window rolls", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -288,6 +298,7 @@ describe("budget window rolls", () => {
       budgetMargin: 0.2,
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
     };
     const t0 = Date.parse("2026-01-01T00:00:00.000Z");
     const initial = initializeBudget(config, clockAt(t0));
@@ -313,6 +324,7 @@ describe("budget window rolls", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,
@@ -336,6 +348,7 @@ describe("budget window rolls", () => {
     const state = {
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       windowStart: "2026-01-01T00:00:00.000Z",
       windowEnd: "2026-01-02T00:00:00.000Z",
       periodSeconds: 86_400,

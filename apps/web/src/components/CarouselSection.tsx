@@ -184,7 +184,7 @@ export function CarouselSection() {
           NeuroPay
         </div>
         <div className="fixed right-[4vw] bottom-[2vh] z-40 font-mono text-[11px] tracking-[0.22em] text-white uppercase mix-blend-exclusion">
-          BNB Chain · USDC
+          BNB Chain · npUSD
         </div>
         <div className="fixed bottom-[2vh] left-[4vw] z-40 font-mono text-[11px] tracking-[0.22em] text-white uppercase mix-blend-exclusion">
           HTTP 402 Gateway

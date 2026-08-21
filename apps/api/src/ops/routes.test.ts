@@ -271,6 +271,7 @@ describe("renderPrometheus", () => {
           spendCap: {
             token: "0x0000000000000000000000000000000000000002",
             tokenDecimals: 18,
+            tokenSymbol: "npUSD",
             limit: 10n,
             periodSeconds: 3600,
           },

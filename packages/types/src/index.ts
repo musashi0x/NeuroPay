@@ -26,8 +26,10 @@ export type {
   SegmentResponse,
   StreamEndReason,
   StreamOpenResponse,
+  StreamStatus,
   StreamView,
 } from "./stream.js";
+export { streamStatusFromEndReason } from "./stream.js";
 export type {
   X402AssetTransferMethod,
   X402Extra,
@@ -47,7 +49,13 @@ export type {
   SessionPolicyView,
   SessionStatus,
 } from "./session.js";
-export type { ConsoleSnapshot } from "./console.js";
+export type { ConsoleSnapshot, CursorPage } from "./console.js";
+export {
+  DEFAULT_LIST_LIMIT,
+  MAX_LIST_LIMIT,
+  SNAPSHOT_PAYMENT_CAP,
+} from "./console.js";
+export { reviveBigints, reviveWire, toJsonSafe } from "./wire.js";
 export type { BudgetState } from "./budget.js";
 export type {
   AppConfig,

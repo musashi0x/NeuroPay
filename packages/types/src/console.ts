@@ -16,4 +16,16 @@ export type ConsoleSnapshot = {
   payments: LedgerEntry[];
 };
 
+/** One page of a cursor-paginated console list. */
+export type CursorPage<T> = {
+  items: T[];
+  /** Opaque cursor for the next page; null when this page is the last. */
+  nextCursor: string | null;
+};
+
+export const DEFAULT_LIST_LIMIT = 50;
+export const MAX_LIST_LIMIT = 200;
+/** Newest payments included in an SSE snapshot. REST lists paginate past this. */
+export const SNAPSHOT_PAYMENT_CAP = 100;
+
 export type { RevokeResult };

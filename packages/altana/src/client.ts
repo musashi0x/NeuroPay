@@ -1,5 +1,5 @@
 /**
- * Altana client construction and the startup decimal assertion.
+ * Altana client construction and the startup token-identity assertion.
  *
  * Wraps `@altananetwork/sdk`'s `createClient` with two project-specific
  * concerns:
@@ -7,12 +7,11 @@
  *  1. The chain set and default chain id come from configuration, not from
  *     a literal. The default is BNB Smart Chain Testnet (97); the spec
  *     forbids hardcoding a chain in payment logic.
- *  2. A startup check reads the token contract's `decimals()` and compares
- *     it against the configured `tokenDecimals`. A mismatch is a fatal
- *     `DecimalsMismatchError`, raised before any on-chain action runs — the
- *     classic "cap written for 6 decimals on an 18-decimal chain" bug is
- *     ~10^12 off, and every payment reverts against a limit that reads as
- *     generous.
+ *  2. A startup check reads the token contract's code, `symbol()`, and
+ *     `decimals()` together and compares them against configuration. A
+ *     mismatch is a fatal `TokenIdentityError`, raised before any
+ *     on-chain action runs. Decimals-only validation is how a near-inert
+ *     third-party token default survived for months.
  */
 
 import {
@@ -28,34 +27,59 @@ import {
   type Transport,
 } from "viem";
 import { bsc } from "viem/chains";
-import type { Address, ChainConfig } from "@neuro-pay/types";
+import type { Address, ChainConfig, Hex } from "@neuro-pay/types";
 import { ConfigError } from "./config/errors.js";
 
 /**
- * Raised when the configured `TOKEN_DECIMALS` does not match what the token
- * contract reports. The error carries both values so an operator sees the
- * exact mismatch from the first line of the crash.
+ * Raised when configured token address, symbol, or decimals do not all
+ * match the contract. `check` says which of the three disagreed so the
+ * first line of the crash is the fix.
  */
-export class DecimalsMismatchError extends ConfigError {
-  readonly configured: number;
-  readonly onChain: number;
+export class TokenIdentityError extends ConfigError {
+  readonly check: "code" | "decimals" | "symbol";
   readonly token: Address;
+  readonly configured: string | number | null;
+  readonly onChain: string | number | null;
 
-  constructor(configured: number, onChain: number, token: Address) {
-    super(
-      `TOKEN_DECIMALS=${configured} does not match decimals()=${onChain} ` +
-        `reported by token contract ${token}. ` +
-        `A cap written for the wrong decimals is ~10^|diff| off; ` +
-        `fix TOKEN_DECIMALS in the environment, do not adjust the contract.`,
-    );
-    this.name = "DecimalsMismatchError";
-    this.configured = configured;
-    this.onChain = onChain;
-    this.token = token;
+  constructor(input: {
+    check: "code" | "decimals" | "symbol";
+    token: Address;
+    configured?: string | number;
+    onChain?: string | number;
+    message: string;
+  }) {
+    super(input.message);
+    this.name = "TokenIdentityError";
+    this.check = input.check;
+    this.token = input.token;
+    this.configured = input.configured ?? null;
+    this.onChain = input.onChain ?? null;
   }
 }
 
-const ERC20_DECIMALS_ABI = [
+/**
+ * Decimals-only subclass kept so existing chain tests and operator
+ * muscle memory (`DecimalsMismatchError`) still match. New code should
+ * catch `TokenIdentityError`.
+ */
+export class DecimalsMismatchError extends TokenIdentityError {
+  constructor(configured: number, onChain: number, token: Address) {
+    super({
+      check: "decimals",
+      token,
+      configured,
+      onChain,
+      message:
+        `TOKEN_DECIMALS=${configured} does not match decimals()=${onChain} ` +
+        `reported by token contract ${token}. ` +
+        `A cap written for the wrong decimals is ~10^|diff| off; ` +
+        `fix TOKEN_DECIMALS in the environment, do not adjust the contract.`,
+    });
+    this.name = "DecimalsMismatchError";
+  }
+}
+
+const ERC20_IDENTITY_ABI = [
   {
     name: "decimals",
     type: "function",
@@ -63,7 +87,24 @@ const ERC20_DECIMALS_ABI = [
     inputs: [],
     outputs: [{ type: "uint8" }],
   },
+  {
+    name: "symbol",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "string" }],
+  },
 ] as const;
+
+/** The narrow slice of a viem public client the identity check needs. */
+export type TokenIdentityClient = {
+  getCode: (input: { address: Address }) => Promise<Hex | undefined>;
+  readContract: (input: {
+    address: Address;
+    abi: readonly unknown[];
+    functionName: string;
+  }) => Promise<unknown>;
+};
 
 /** The viem chain handle for the configured chain id, defaulting to BSC testnet. */
 function viemChainFor(chainId: number) {
@@ -119,23 +160,74 @@ export function publicClientFor(
 }
 
 /**
- * Read `decimals()` from the token contract and compare against config.
+ * Read code, `symbol()`, and `decimals()` from the token contract and
+ * compare against config.
  *
- * Called once at startup. Throws `DecimalsMismatchError` on disagreement;
- * callers should let that propagate and kill the process.
+ * Called once at startup. Throws `TokenIdentityError` (or the decimals
+ * subclass) on disagreement; callers should let that propagate and kill
+ * the process.
  */
-export async function assertTokenDecimals(
-  publicClient: PublicClient<Transport>,
-  chain: ChainConfig,
+export async function assertTokenIdentity(
+  publicClient: TokenIdentityClient,
+  chain: Pick<ChainConfig, "token" | "tokenDecimals" | "tokenSymbol">,
 ): Promise<void> {
-  const onChain = await publicClient.readContract({
+  const code = await publicClient.getCode({ address: chain.token });
+  if (code === undefined || code === "0x") {
+    throw new TokenIdentityError({
+      check: "code",
+      token: chain.token,
+      message:
+        `TOKEN_ADDRESS=${chain.token} has no contract code. ` +
+        `Point TOKEN_ADDRESS at the ERC-20 payments are denominated in.`,
+    });
+  }
+
+  const onChainDecimals = await publicClient.readContract({
     address: chain.token,
-    abi: ERC20_DECIMALS_ABI,
+    abi: ERC20_IDENTITY_ABI,
     functionName: "decimals",
   });
-  if (onChain !== chain.tokenDecimals) {
-    throw new DecimalsMismatchError(chain.tokenDecimals, onChain, chain.token);
+  const decimals = Number(onChainDecimals);
+  if (!Number.isInteger(decimals) || decimals !== chain.tokenDecimals) {
+    throw new DecimalsMismatchError(
+      chain.tokenDecimals,
+      Number.isInteger(decimals) ? decimals : Number.NaN,
+      chain.token,
+    );
   }
+
+  const onChainSymbol = await publicClient.readContract({
+    address: chain.token,
+    abi: ERC20_IDENTITY_ABI,
+    functionName: "symbol",
+  });
+  if (
+    typeof onChainSymbol !== "string" ||
+    onChainSymbol !== chain.tokenSymbol
+  ) {
+    throw new TokenIdentityError({
+      check: "symbol",
+      token: chain.token,
+      configured: chain.tokenSymbol,
+      onChain:
+        typeof onChainSymbol === "string"
+          ? onChainSymbol
+          : String(onChainSymbol),
+      message:
+        `TOKEN_SYMBOL=${chain.tokenSymbol} does not match symbol()=` +
+        `${String(onChainSymbol)} reported by token contract ${chain.token}. ` +
+        `Fix TOKEN_SYMBOL (or TOKEN_ADDRESS) so copy, config, and the ` +
+        `contract name the same token.`,
+    });
+  }
+}
+
+/** @deprecated Use `assertTokenIdentity`. Kept as a thin alias. */
+export async function assertTokenDecimals(
+  publicClient: TokenIdentityClient,
+  chain: Pick<ChainConfig, "token" | "tokenDecimals" | "tokenSymbol">,
+): Promise<void> {
+  await assertTokenIdentity(publicClient, chain);
 }
 
 /** Result of building a client: the SDK handle plus the viem read client. */
@@ -150,9 +242,9 @@ export type AltanaClientContext = {
  * Construct the Altana client context for a configured chain.
  *
  * Default chain id is 97 (BNB testnet) when the config omits it — the spec
- * requires testnet as the default. The decimal check runs against the
+ * requires testnet as the default. The identity check runs against the
  * public client; callers can pass a `PublicClient` to stub the RPC for
- * tests (a fake transport that returns the expected decimals).
+ * tests (a fake transport that returns the expected code/symbol/decimals).
  */
 export async function buildAltanaClient(
   chain: ChainConfig,
@@ -169,7 +261,7 @@ export async function buildAltanaClient(
   const network = networkConfigFor(chain.chainId, chain.rpcUrl);
   const publicClient =
     options?.client ?? publicClientFor(chain.chainId, chain.rpcUrl);
-  await assertTokenDecimals(publicClient, chain);
+  await assertTokenIdentity(publicClient, chain);
   const client =
     options?.sdkClient ??
     createClient({ chains: [network], defaultChainId: chain.chainId });
