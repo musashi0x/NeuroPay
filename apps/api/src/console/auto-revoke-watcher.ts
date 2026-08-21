@@ -119,11 +119,33 @@ export function createAutoRevokeWatcher(
     const sysContext: OperatorContext = { actor: "system" };
 
     try {
-      await input.consoleService.revoke(sysContext, {
-        auditAction: FIRED_AUDIT_ACTION,
-        detail: triggerDetail,
-      });
+      // Drive the same kill switch the manual console button triggers.
+      // The console service records its own audit row (the default
+      // action "session.revoke.requested") — that entry says "kill
+      // switch was invoked" and is the same one a manual operator
+      // gets. After it returns, we append a separate
+      // "session.auto-revoke.fired" entry that names the trigger
+      // (count, threshold, wallet). Two distinct actions, two
+      // distinct facts.
+      await input.consoleService.revoke(sysContext);
       lastFiredAt = firedAt;
+      await input.ledger
+        .appendAudit({
+          action: FIRED_AUDIT_ACTION,
+          actor: "system",
+          outcome: "succeeded",
+          subject: wallet,
+          detail: triggerDetail,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            {
+              err: err instanceof Error ? err.message : String(err),
+              action: FIRED_AUDIT_ACTION,
+            },
+            "auto-revoke fired audit write failed",
+          );
+        });
       logger.warn(
         { count, threshold, wallet },
         "auto-revoke fired: critical unrecovered count crossed",
