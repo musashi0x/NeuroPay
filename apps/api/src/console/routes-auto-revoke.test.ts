@@ -37,7 +37,12 @@ function makeHarness() {
         maxInFlightSettlements: 3,
       },
     },
-    sessions: { list: () => [], read: () => undefined, save: () => {}, remove: () => true } as never,
+    sessions: {
+      list: () => [],
+      read: () => undefined,
+      save: () => {},
+      remove: () => true,
+    } as never,
     ledger,
     now: () => Date.parse("2026-08-17T12:00:00.000Z"),
   });
@@ -77,7 +82,12 @@ function makeHarness() {
   };
   const watcher = createAutoRevokeWatcher({
     ledger,
-    sessions: { list: () => [], read: () => undefined, save: () => {}, remove: () => true } as never,
+    sessions: {
+      list: () => [],
+      read: () => undefined,
+      save: () => {},
+      remove: () => true,
+    } as never,
     consoleService,
     ops: opsService as never,
     failedSettlementCritical: 5,
@@ -85,7 +95,6 @@ function makeHarness() {
   });
   const app = createApp({
     console: consoleService,
-    seller: undefined,
     ops: { ops: opsService as never, ledger },
     ledger,
     autoRevoke: watcher,
