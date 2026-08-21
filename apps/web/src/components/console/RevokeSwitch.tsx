@@ -2,13 +2,16 @@
 
 import { useState } from "react";
 import type { RevokeResult } from "@neuro-pay/types";
+import { ExplorerLink } from "@/components/console/ExplorerLink";
 import { Row } from "@/components/console/shared";
+import { explorerUrl } from "@/lib/explorer";
 import {
   Button,
   DialogCancelButton,
   DialogContent,
   DialogRoot,
   DialogTrigger,
+  TooltipProvider,
 } from "@/components/ui";
 
 /**
@@ -16,22 +19,44 @@ import {
  * Kept separate so the main component's flow stays linear and the result
  * presentation can be swapped without re-wiring the form.
  */
-function RevokeResultBlock({ result }: { result: RevokeResult }) {
+function RevokeResultBlock({
+  result,
+  chainId,
+}: {
+  result: RevokeResult;
+  chainId: number;
+}) {
+  const hash = result.onChain.transactionHash;
+  const statusLabel = result.onChain.revoked
+    ? "revoked"
+    : `not revoked${result.onChain.status ? ` · ${result.onChain.status}` : ""}`;
+
   return (
-    <dl className="mt-4 space-y-2 text-sm">
-      <Row
-        label="Local"
-        value={result.local.revoked ? "signing stopped" : "still loaded"}
-      />
-      <Row
-        label="On-chain"
-        value={
-          result.onChain.revoked
-            ? `revoked${result.onChain.transactionHash ? ` · ${result.onChain.transactionHash}` : ""}`
-            : `not revoked${result.onChain.status ? ` · ${result.onChain.status}` : ""}`
-        }
-      />
-    </dl>
+    <TooltipProvider delayDuration={150}>
+      <dl className="mt-4 space-y-2 text-sm">
+        <Row
+          label="Local"
+          value={result.local.revoked ? "signing stopped" : "still loaded"}
+        />
+        <Row
+          label="On-chain"
+          value={
+            hash ? (
+              <span>
+                {statusLabel}
+                {" · "}
+                <ExplorerLink
+                  href={explorerUrl(chainId, "tx", hash)}
+                  value={hash}
+                />
+              </span>
+            ) : (
+              statusLabel
+            )
+          }
+        />
+      </dl>
+    </TooltipProvider>
   );
 }
 
@@ -40,6 +65,7 @@ export function RevokeSwitch({
   phrase,
   revoking,
   result,
+  chainId,
   onBegin,
   onCancel,
   onPhrase,
@@ -50,6 +76,7 @@ export function RevokeSwitch({
   phrase: string;
   revoking: boolean;
   result: RevokeResult | null;
+  chainId: number;
   onBegin: () => void;
   onCancel: () => void;
   onPhrase: (value: string) => void;
@@ -78,7 +105,7 @@ export function RevokeSwitch({
         stage and can take a block. They are reported separately.
       </p>
 
-      {result ? <RevokeResultBlock result={result} /> : null}
+      {result ? <RevokeResultBlock result={result} chainId={chainId} /> : null}
 
       {!confirming ? (
         <div className="mt-4 flex flex-wrap gap-3">

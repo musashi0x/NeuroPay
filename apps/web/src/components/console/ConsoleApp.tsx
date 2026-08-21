@@ -14,6 +14,7 @@ import { StreamPanel } from "@/components/console/StreamPanel";
 import { configuredSymbol } from "@/components/console/shared";
 import { useConsoleSnapshot } from "@/components/console/useConsoleSnapshot";
 import { useSettlementToasts } from "@/components/console/useSettlementToasts";
+import { consoleChainId } from "@/lib/explorer";
 import { ToastProvider } from "@/components/ui";
 
 /**
@@ -62,13 +63,18 @@ function ConsoleBody() {
   }
 
   const symbol = configuredSymbol(snapshot);
+  const chainId = consoleChainId(snapshot);
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-6 py-10">
       <ConsoleHeader error={error} />
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        <SessionPanel session={snapshot.session} symbol={symbol} />
+        <SessionPanel
+          session={snapshot.session}
+          symbol={symbol}
+          chainId={chainId}
+        />
         <BudgetPanel budget={snapshot.budget} symbol={symbol} />
       </div>
 
@@ -87,6 +93,7 @@ function ConsoleBody() {
         phrase={revokePhrase}
         revoking={revoking}
         result={revokeResult}
+        chainId={chainId}
         onBegin={() => setConfirming(true)}
         onCancel={() => {
           setConfirming(false);

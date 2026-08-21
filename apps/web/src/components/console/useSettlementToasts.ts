@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import type { ConsoleSnapshot, LedgerEntry } from "@neuro-pay/types";
+import { truncated } from "@/components/console/shared";
+import { explorerUrl } from "@/lib/explorer";
 import { useToast, type ToastTone } from "@/components/ui";
 
 /**
@@ -36,8 +38,13 @@ function titleForEvent(entry: LedgerEntry): string {
 }
 
 function descriptionForEntry(entry: LedgerEntry): string | undefined {
-  if (entry.transactionHash) return `tx ${entry.transactionHash}`;
+  if (entry.transactionHash) return `tx ${truncated(entry.transactionHash)}`;
   return entry.classification ?? undefined;
+}
+
+function hrefForEntry(entry: LedgerEntry): string | undefined {
+  if (!entry.transactionHash) return undefined;
+  return explorerUrl(entry.chainId, "tx", entry.transactionHash) ?? undefined;
 }
 
 /**
@@ -59,18 +66,13 @@ export function useSettlementToasts(snapshot: ConsoleSnapshot) {
         if (seenIds.current.has(entry.id)) continue;
         if (!TOAST_EVENTS.has(entry.event)) continue;
         const description = descriptionForEntry(entry);
-        if (description !== undefined) {
-          push({
-            title: titleForEvent(entry),
-            description,
-            tone: toneForEvent(entry.event),
-          });
-        } else {
-          push({
-            title: titleForEvent(entry),
-            tone: toneForEvent(entry.event),
-          });
-        }
+        const href = hrefForEntry(entry);
+        push({
+          title: titleForEvent(entry),
+          ...(description !== undefined ? { description } : {}),
+          ...(href !== undefined ? { href } : {}),
+          tone: toneForEvent(entry.event),
+        });
       }
     } else {
       primed.current = true;

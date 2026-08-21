@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 import type { LedgerEntry } from "@neuro-pay/types";
 import { Amount } from "@/components/console/Amount";
-import { toneFor } from "@/components/console/shared";
+import { ExplorerLink } from "@/components/console/ExplorerLink";
+import { toneFor, truncated } from "@/components/console/shared";
+import { explorerUrl } from "@/lib/explorer";
 import { Pill } from "@/components/ui";
 import {
   TooltipContent,
@@ -9,16 +11,6 @@ import {
   TooltipRoot,
   TooltipTrigger,
 } from "@/components/ui";
-
-/**
- * Truncates an identifier for inline display, retaining head + tail so
- * the visible part is still recognizable. The full value rides in a
- * tooltip on hover.
- */
-function truncated(value: string, head = 10, tail = 8): string {
-  if (value.length <= head + tail + 1) return value;
-  return `${value.slice(0, head)}…${value.slice(-tail)}`;
-}
 
 export function HistoryPanel({
   payments,
@@ -90,17 +82,14 @@ export function HistoryPanel({
                   {entry.transactionHash ? (
                     <>
                       {" · "}
-                      <TooltipRoot>
-                        <TooltipTrigger asChild>
-                          <span
-                            tabIndex={0}
-                            className="cursor-help underline decoration-dotted underline-offset-2"
-                          >
-                            {truncated(entry.transactionHash)}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{entry.transactionHash}</TooltipContent>
-                      </TooltipRoot>
+                      <ExplorerLink
+                        href={explorerUrl(
+                          entry.chainId,
+                          "tx",
+                          entry.transactionHash,
+                        )}
+                        value={entry.transactionHash}
+                      />
                     </>
                   ) : null}
                 </p>

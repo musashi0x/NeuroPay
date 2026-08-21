@@ -16,6 +16,7 @@ type ToastItem = {
   id: number;
   title: string;
   description?: string;
+  href?: string;
   tone: ToastTone;
 };
 
@@ -86,7 +87,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 className="mt-1 text-xs"
                 style={{ color: "var(--muted)" }}
               >
-                {item.description}
+                {item.href ? (
+                  <a
+                    href={item.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    {item.description}
+                  </a>
+                ) : (
+                  item.description
+                )}
               </ToastPrimitive.Description>
             ) : null}
             <ToastPrimitive.Close

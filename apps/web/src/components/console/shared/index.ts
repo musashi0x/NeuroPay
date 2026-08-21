@@ -8,7 +8,7 @@ import type { PillTone } from "@/components/ui";
 export type StatusTone = PillTone;
 
 export { Row } from "./Row";
-export { formatDuration, formatPeriod } from "./format";
+export { formatDuration, formatPeriod, truncated } from "./format";
 export { useRemaining } from "./useRemaining";
 export { toneFor } from "./toneFor";
 export { configuredSymbol } from "./symbol";
