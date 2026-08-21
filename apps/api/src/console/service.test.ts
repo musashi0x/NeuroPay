@@ -27,6 +27,7 @@ function config(): AppConfig {
       rpcUrl: "https://example.invalid",
       token: TOKEN,
       tokenDecimals: 18,
+      tokenSymbol: "npUSD",
       payTo: "0x000000000000000000000000000000000000d3ad" as Address,
     },
     secrets: {
@@ -121,13 +122,14 @@ describe("console API", () => {
     const body = reviveBigints(await response.json()) as {
       walletAddress: string;
       publicKey: string;
-      spendCap: { limit: bigint; periodSeconds: number };
+      spendCap: { limit: bigint; periodSeconds: number; tokenSymbol: string };
       remainingLifetimeSeconds: number;
       allowedCalls: { to: string }[];
     };
     expect(body.walletAddress).toBe(WALLET);
     expect(body.publicKey).toBe(PUBKEY);
     expect(body.spendCap.limit).toBe(FIFTY);
+    expect(body.spendCap.tokenSymbol).toBe("npUSD");
     expect(body.spendCap.periodSeconds).toBe(86_400);
     expect(body.remainingLifetimeSeconds).toBe(3_600);
     expect(body.allowedCalls[0]?.to).toMatch(/^0x/);
@@ -145,13 +147,16 @@ describe("console API", () => {
     const body = reviveBigints(await response.json()) as {
       streams: Array<{
         status: string;
+        tokenSymbol: string;
         priceSheet: { perCall: bigint };
         secondsUntilNextTick: number;
         accruedUnpaid: bigint;
       }>;
+      nextCursor: string | null;
     };
     expect(body.streams).toHaveLength(1);
     expect(body.streams[0]?.status).toBe("active");
+    expect(body.streams[0]?.tokenSymbol).toBe("npUSD");
     expect(body.streams[0]?.priceSheet.perCall).toBe(100n);
     expect(body.streams[0]?.secondsUntilNextTick).toBe(60);
     expect(body.streams[0]?.accruedUnpaid).toBe(0n);
@@ -178,6 +183,71 @@ describe("console API", () => {
     expect(body.payments.some((p) => p.event === "payment.signed")).toBe(true);
     expect(body.payments[0]?.amount).toBe(10n ** 16n);
     expect(body.payments[0]?.nonce).toBe("1");
+  });
+
+  it("paginates payments newest-first", async () => {
+    const { app, ledger } = harness();
+    for (const nonce of ["1", "2", "3"]) {
+      await recordPaymentSigned({
+        store: ledger,
+        ctx: {
+          streamId: "stream-1",
+          sessionPublicKey: PUBKEY,
+          chainId: 97,
+          token: TOKEN,
+          tokenDecimals: 18,
+        },
+        amount: 10n ** 16n,
+        nonce,
+      });
+    }
+    const first = reviveBigints(
+      await (await app.request("/v1/payments?limit=2")).json(),
+    ) as {
+      payments: Array<{ nonce: string }>;
+      nextCursor: string | null;
+    };
+    expect(first.payments).toHaveLength(2);
+    expect(first.nextCursor).toBeTruthy();
+    const second = reviveBigints(
+      await (
+        await app.request(`/v1/payments?limit=2&cursor=${first.nextCursor}`)
+      ).json(),
+    ) as {
+      payments: Array<{ nonce: string }>;
+      nextCursor: string | null;
+    };
+    const ids = [...first.payments, ...second.payments].map((p) => p.nonce);
+    expect(new Set(ids).size).toBe(3);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("reports shutdown leftovers as abandoned, not ended", async () => {
+    const { app, seller } = harness();
+    seller.openStream({ requestUrl: "http://localhost:4000/v1/streams" });
+    await seller.shutdown();
+    const body = reviveBigints(
+      await (await app.request("/v1/streams?status=abandoned")).json(),
+    ) as { streams: Array<{ status: string; endReason: string | null }> };
+    expect(body.streams).toHaveLength(1);
+    expect(body.streams[0]?.status).toBe("abandoned");
+    expect(body.streams[0]?.endReason).toBe("abandoned");
+  });
+
+  it("binds the console to the lexicographically first wallet", async () => {
+    const { app, sessions } = harness();
+    const later = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address;
+    sessions.save(
+      session({
+        walletAddress: later,
+        publicKey: ("0x04" + "cd".repeat(64)) as Hex,
+      }),
+    );
+    const body = (await (await app.request("/v1/session")).json()) as {
+      walletAddress: string;
+    };
+    expect(body.walletAddress).toBe(WALLET);
+    expect(WALLET < later).toBe(true);
   });
 
   it("reports local budget and on-chain cap separately", async () => {

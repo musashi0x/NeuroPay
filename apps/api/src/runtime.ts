@@ -51,7 +51,7 @@ import {
   sessionAuthorityProbe,
   settlerBalanceProbe,
   skippedProbe,
-  tokenDecimalsProbe,
+  tokenIdentityProbe,
   type ProbeClient,
 } from "./ops/probes.js";
 import {
@@ -367,12 +367,11 @@ function buildProbes(input: {
       ? rpcProbe(probeClient, config.chain.chainId)
       : skippedProbe("rpc", noRpc),
     probeClient
-      ? tokenDecimalsProbe(
-          probeClient,
-          config.chain.token,
-          config.chain.tokenDecimals,
-        )
-      : skippedProbe("token-decimals", noRpc),
+      ? tokenIdentityProbe(probeClient, config.chain.token, {
+          decimals: config.chain.tokenDecimals,
+          symbol: config.chain.tokenSymbol,
+        })
+      : skippedProbe("token-identity", noRpc),
     probeClient
       ? permit2Probe(probeClient, PERMIT2_ADDRESS as Address)
       : skippedProbe("permit2", noRpc),
@@ -440,6 +439,7 @@ function describeEffectiveConfig(
     `chainId=${config.chain.chainId}`,
     `token=${config.chain.token}`,
     `tokenDecimals=${config.chain.tokenDecimals}`,
+    `tokenSymbol=${config.chain.tokenSymbol}`,
     `payTo=${config.chain.payTo}`,
     `settlementThreshold=${config.metering.settlementThreshold}`,
     `tickIntervalSeconds=${config.metering.tickIntervalSeconds}`,

@@ -71,7 +71,7 @@ export const STEPS: Step[] = [
     src: "/p07.png",
     aspect: PORTRAIT,
     label: "06 — Settlement",
-    title: "Settled in USDC on BNB Chain",
+    title: "Settled on BNB Chain",
     note: "The money moves before the call runs. No escrow, no invoice, no trust.",
   },
   {
@@ -93,7 +93,7 @@ export const STEPS: Step[] = [
     aspect: PORTRAIT,
     label: "09 — Integrate",
     title: "Two lines",
-    note: "402 handled, grant enforced, USDC settled. Your code just sees a response.",
+    note: "402 handled, grant enforced, payment settled. Your code just sees a response.",
   },
 ];
 

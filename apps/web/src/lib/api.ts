@@ -42,23 +42,43 @@ export async function fetchStreams(): Promise<StreamView[]> {
   return body.streams;
 }
 
-export async function fetchPayments(): Promise<LedgerEntry[]> {
-  const body = await getJson<{ payments: LedgerEntry[] }>("/v1/payments");
-  return body.payments;
+export async function fetchPayments(input?: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<{ payments: LedgerEntry[]; nextCursor: string | null }> {
+  const params = new URLSearchParams();
+  if (input?.limit !== undefined) params.set("limit", String(input.limit));
+  if (input?.cursor) params.set("cursor", input.cursor);
+  const query = params.toString();
+  const path = query ? `/v1/payments?${query}` : "/v1/payments";
+  const body = await getJson<{
+    payments: LedgerEntry[];
+    nextCursor: string | null;
+  }>(path);
+  return {
+    payments: body.payments,
+    nextCursor: body.nextCursor ?? null,
+  };
 }
 
 export async function fetchBudget(): Promise<BudgetState> {
   return getJson<BudgetState>("/v1/budget");
 }
 
-export async function fetchSnapshot(): Promise<ConsoleSnapshot> {
-  const [session, streams, payments, budget] = await Promise.all([
+export async function fetchSnapshot(): Promise<{
+  snapshot: ConsoleSnapshot;
+  nextPaymentCursor: string | null;
+}> {
+  const [session, streams, page, budget] = await Promise.all([
     fetchSession().catch(() => null),
     fetchStreams().catch(() => []),
-    fetchPayments().catch(() => []),
+    fetchPayments().catch(() => ({ payments: [], nextCursor: null })),
     fetchBudget().catch(() => null),
   ]);
-  return { session, streams, payments, budget };
+  return {
+    snapshot: { session, streams, payments: page.payments, budget },
+    nextPaymentCursor: page.nextCursor,
+  };
 }
 
 export async function revokeSession(): Promise<RevokeResult> {

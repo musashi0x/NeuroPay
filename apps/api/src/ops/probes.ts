@@ -31,13 +31,20 @@ export type ProbeClient = {
   }) => Promise<unknown>;
 };
 
-const ERC20_DECIMALS_ABI = [
+const ERC20_IDENTITY_ABI = [
   {
     name: "decimals",
     type: "function",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    name: "symbol",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
   },
 ] as const;
 
@@ -74,43 +81,66 @@ export function rpcProbe(client: ProbeClient, expectedChainId: number): Probe {
 }
 
 /**
- * The token contract's `decimals()` matches configuration.
+ * The token at the configured address is a contract whose `symbol()`
+ * and `decimals()` both match configuration.
  *
  * Startup already asserts this once in `buildAltanaClient`. Re-checking
  * here is not redundant: the process can outlive the assertion by days,
  * and an RPC that has been failed over to a different network answers
- * `decimals()` from a different contract at the same address. A cap
- * written for 6 decimals is a factor of 10^12 wrong against an
- * 18-decimal token, in the direction that makes every payment revert
- * against a limit that reads as generous.
+ * from a different contract at the same address. Decimals-only is how a
+ * near-inert third-party token default survived every boot.
  */
-export function tokenDecimalsProbe(
+export function tokenIdentityProbe(
   client: ProbeClient,
   token: Address,
-  expectedDecimals: number,
+  expected: { decimals: number; symbol: string },
 ): Probe {
   return {
-    name: "token-decimals",
+    name: "token-identity",
     run: async (): Promise<ProbeVerdict> => {
-      const raw = await client.readContract({
+      const code = await client.getCode({ address: token });
+      if (code === undefined || code === "0x") {
+        return {
+          status: "down",
+          message: `no contract code at token address ${token}`,
+        };
+      }
+
+      const rawDecimals = await client.readContract({
         address: token,
-        abi: ERC20_DECIMALS_ABI,
+        abi: ERC20_IDENTITY_ABI,
         functionName: "decimals",
       });
-      const decimals = Number(raw);
+      const decimals = Number(rawDecimals);
       if (!Number.isInteger(decimals)) {
         return {
           status: "down",
-          message: `token ${token} returned a non-integer decimals() (${String(raw)})`,
+          message: `token ${token} returned a non-integer decimals() (${String(rawDecimals)})`,
         };
       }
-      if (decimals !== expectedDecimals) {
+      if (decimals !== expected.decimals) {
         return {
           status: "down",
-          message: `token ${token} reports ${decimals} decimals, configured for ${expectedDecimals}`,
+          message: `token ${token} reports ${decimals} decimals, configured for ${expected.decimals}`,
         };
       }
-      return { status: "ok", message: `${decimals} decimals` };
+
+      const rawSymbol = await client.readContract({
+        address: token,
+        abi: ERC20_IDENTITY_ABI,
+        functionName: "symbol",
+      });
+      if (typeof rawSymbol !== "string" || rawSymbol !== expected.symbol) {
+        return {
+          status: "down",
+          message: `token ${token} reports symbol ${String(rawSymbol)}, configured for ${expected.symbol}`,
+        };
+      }
+
+      return {
+        status: "ok",
+        message: `${rawSymbol} · ${decimals} decimals`,
+      };
     },
   };
 }

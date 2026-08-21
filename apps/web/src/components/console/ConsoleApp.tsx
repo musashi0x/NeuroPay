@@ -9,10 +9,14 @@ import type {
   SessionPolicyView,
   StreamView,
 } from "@neuro-pay/types";
+import { SNAPSHOT_PAYMENT_CAP } from "@neuro-pay/types";
 import { Amount } from "@/components/console/Amount";
-import { fetchSnapshot, openConsoleEvents, revokeSession } from "@/lib/api";
-
-const TOKEN_SYMBOL = "USDT";
+import {
+  fetchPayments,
+  fetchSnapshot,
+  openConsoleEvents,
+  revokeSession,
+} from "@/lib/api";
 
 const emptySnapshot: ConsoleSnapshot = {
   session: null,
@@ -21,8 +25,28 @@ const emptySnapshot: ConsoleSnapshot = {
   payments: [],
 };
 
+function configuredSymbol(snapshot: ConsoleSnapshot): string {
+  return (
+    snapshot.session?.spendCap.tokenSymbol ??
+    snapshot.budget?.tokenSymbol ??
+    snapshot.streams[0]?.tokenSymbol ??
+    "token"
+  );
+}
+
+function cursorAfterSnapshot(payments: LedgerEntry[]): string | null {
+  if (payments.length < SNAPSHOT_PAYMENT_CAP) return null;
+  const oldest = payments.reduce(
+    (min, entry) => (entry.sequence < min ? entry.sequence : min),
+    payments[0]!.sequence,
+  );
+  return String(oldest);
+}
+
 export function ConsoleApp() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot>(emptySnapshot);
+  const [paymentCursor, setPaymentCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [revokePhrase, setRevokePhrase] = useState("");
@@ -32,9 +56,10 @@ export function ConsoleApp() {
   useEffect(() => {
     let cancelled = false;
     void fetchSnapshot()
-      .then((next) => {
+      .then(({ snapshot: next, nextPaymentCursor }) => {
         if (!cancelled) {
           setSnapshot(next);
+          setPaymentCursor(nextPaymentCursor);
           setError(null);
         }
       })
@@ -46,6 +71,7 @@ export function ConsoleApp() {
 
     const stop = openConsoleEvents((next) => {
       setSnapshot(next);
+      setPaymentCursor(cursorAfterSnapshot(next.payments));
       setError(null);
     });
     return () => {
@@ -62,7 +88,9 @@ export function ConsoleApp() {
       setRevokeResult(result);
       setConfirming(false);
       setRevokePhrase("");
-      setSnapshot(await fetchSnapshot());
+      const loaded = await fetchSnapshot();
+      setSnapshot(loaded.snapshot);
+      setPaymentCursor(loaded.nextPaymentCursor);
     } catch (err) {
       setError(err instanceof Error ? err.message : "revoke failed");
     } finally {
@@ -103,12 +131,42 @@ export function ConsoleApp() {
       </header>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        <SessionPanel session={snapshot.session} />
-        <BudgetPanel budget={snapshot.budget} />
+        <SessionPanel
+          session={snapshot.session}
+          symbol={configuredSymbol(snapshot)}
+        />
+        <BudgetPanel
+          budget={snapshot.budget}
+          symbol={configuredSymbol(snapshot)}
+        />
       </div>
 
-      <StreamPanel streams={snapshot.streams} />
-      <HistoryPanel payments={snapshot.payments} />
+      <StreamPanel
+        streams={snapshot.streams}
+        symbol={configuredSymbol(snapshot)}
+      />
+      <HistoryPanel
+        payments={snapshot.payments}
+        symbol={configuredSymbol(snapshot)}
+        nextCursor={paymentCursor}
+        loadingMore={loadingMore}
+        onLoadMore={() => {
+          if (!paymentCursor || loadingMore) return;
+          setLoadingMore(true);
+          void fetchPayments({ cursor: paymentCursor })
+            .then((page) => {
+              setSnapshot((prev) => ({
+                ...prev,
+                payments: [...prev.payments, ...page.payments],
+              }));
+              setPaymentCursor(page.nextCursor);
+            })
+            .catch((err: unknown) => {
+              setError(err instanceof Error ? err.message : "load more failed");
+            })
+            .finally(() => setLoadingMore(false));
+        }}
+      />
       <RevokeSwitch
         confirming={confirming}
         phrase={revokePhrase}
@@ -130,7 +188,13 @@ export function ConsoleApp() {
   );
 }
 
-function SessionPanel({ session }: { session: SessionPolicyView | null }) {
+function SessionPanel({
+  session,
+  symbol,
+}: {
+  session: SessionPolicyView | null;
+  symbol: string;
+}) {
   const remaining = useRemaining(session?.expiresAt ?? null);
   if (!session) {
     return (
@@ -173,7 +237,7 @@ function SessionPanel({ session }: { session: SessionPolicyView | null }) {
             <Amount
               amount={session.spendCap.limit}
               decimals={session.spendCap.tokenDecimals}
-              symbol={TOKEN_SYMBOL}
+              symbol={session.spendCap.tokenSymbol || symbol}
             />
             <span className="ml-2 text-[var(--muted)]">
               / {formatPeriod(session.spendCap.periodSeconds)}
@@ -187,7 +251,13 @@ function SessionPanel({ session }: { session: SessionPolicyView | null }) {
   );
 }
 
-function BudgetPanel({ budget }: { budget: BudgetState | null }) {
+function BudgetPanel({
+  budget,
+  symbol,
+}: {
+  budget: BudgetState | null;
+  symbol: string;
+}) {
   if (!budget) {
     return (
       <section className="border p-5" style={{ borderColor: "var(--line)" }}>
@@ -225,7 +295,7 @@ function BudgetPanel({ budget }: { budget: BudgetState | null }) {
             <Amount
               amount={budget.localRemaining}
               decimals={budget.tokenDecimals}
-              symbol={TOKEN_SYMBOL}
+              symbol={budget.tokenSymbol || symbol}
             />
             <span className="ml-2 text-[var(--muted)]">
               of{" "}
@@ -242,7 +312,7 @@ function BudgetPanel({ budget }: { budget: BudgetState | null }) {
             <Amount
               amount={budget.onChainRemaining}
               decimals={budget.tokenDecimals}
-              symbol={TOKEN_SYMBOL}
+              symbol={budget.tokenSymbol || symbol}
             />
             <span className="ml-2 text-[var(--muted)]">
               of{" "}
@@ -259,7 +329,7 @@ function BudgetPanel({ budget }: { budget: BudgetState | null }) {
             <Amount
               amount={budget.spent}
               decimals={budget.tokenDecimals}
-              symbol={TOKEN_SYMBOL}
+              symbol={budget.tokenSymbol || symbol}
             />
           }
         />
@@ -268,7 +338,25 @@ function BudgetPanel({ budget }: { budget: BudgetState | null }) {
   );
 }
 
-function StreamPanel({ streams }: { streams: StreamView[] }) {
+function streamTone(status: StreamView["status"]): "ok" | "bad" | "warn" {
+  if (status === "active") return "ok";
+  if (status === "abandoned") return "warn";
+  return "bad";
+}
+
+function streamLabel(stream: StreamView): string {
+  if (stream.status === "active") return "active";
+  if (stream.status === "abandoned") return "abandoned";
+  return `ended · ${stream.endReason ?? "unknown"}`;
+}
+
+function StreamPanel({
+  streams,
+  symbol,
+}: {
+  streams: StreamView[];
+  symbol: string;
+}) {
   return (
     <section className="mt-6 border p-5" style={{ borderColor: "var(--line)" }}>
       <h2 className="text-sm tracking-[0.2em] uppercase text-[var(--muted)]">
@@ -287,12 +375,8 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <p className="font-mono text-sm">{stream.streamId}</p>
                 <StatusPill
-                  tone={stream.status === "ended" ? "bad" : "ok"}
-                  label={
-                    stream.status === "ended"
-                      ? `ended · ${stream.endReason ?? "unknown"}`
-                      : "active"
-                  }
+                  tone={streamTone(stream.status)}
+                  label={streamLabel(stream)}
                 />
               </div>
               <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
@@ -304,7 +388,7 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
                       <Amount
                         amount={stream.priceSheet.perCall}
                         decimals={stream.priceSheet.tokenDecimals}
-                        symbol={TOKEN_SYMBOL}
+                        symbol={stream.tokenSymbol || symbol}
                       />
                     </div>
                     <div>
@@ -312,7 +396,7 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
                       <Amount
                         amount={stream.priceSheet.perSecond}
                         decimals={stream.priceSheet.tokenDecimals}
-                        symbol={TOKEN_SYMBOL}
+                        symbol={stream.tokenSymbol || symbol}
                       />
                     </div>
                     <div>
@@ -320,7 +404,7 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
                       <Amount
                         amount={stream.priceSheet.perUnit}
                         decimals={stream.priceSheet.tokenDecimals}
-                        symbol={TOKEN_SYMBOL}
+                        symbol={stream.tokenSymbol || symbol}
                       />
                     </div>
                   </dd>
@@ -331,7 +415,7 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
                     <Amount
                       amount={stream.accruedUnpaid}
                       decimals={stream.priceSheet.tokenDecimals}
-                      symbol={TOKEN_SYMBOL}
+                      symbol={stream.tokenSymbol || symbol}
                     />
                   </dd>
                 </div>
@@ -342,9 +426,9 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
                 <Row
                   label="Next tick"
                   value={
-                    stream.status === "ended"
-                      ? "—"
-                      : `${stream.secondsUntilNextTick}s`
+                    stream.status === "active"
+                      ? `${stream.secondsUntilNextTick}s`
+                      : "—"
                   }
                 />
                 <Row
@@ -360,7 +444,19 @@ function StreamPanel({ streams }: { streams: StreamView[] }) {
   );
 }
 
-function HistoryPanel({ payments }: { payments: LedgerEntry[] }) {
+function HistoryPanel({
+  payments,
+  symbol,
+  nextCursor,
+  loadingMore,
+  onLoadMore,
+}: {
+  payments: LedgerEntry[];
+  symbol: string;
+  nextCursor: string | null;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+}) {
   const ordered = useMemo(
     () => [...payments].sort((a, b) => b.sequence - a.sequence),
     [payments],
@@ -386,7 +482,7 @@ function HistoryPanel({ payments }: { payments: LedgerEntry[] }) {
                   <Amount
                     amount={entry.amount}
                     decimals={entry.tokenDecimals}
-                    symbol={TOKEN_SYMBOL}
+                    symbol={symbol}
                   />
                 ) : (
                   <span className="text-[var(--muted)]">no amount</span>
@@ -401,6 +497,17 @@ function HistoryPanel({ payments }: { payments: LedgerEntry[] }) {
           ))}
         </ol>
       )}
+      {nextCursor ? (
+        <button
+          type="button"
+          className="mt-4 border px-4 py-2 text-sm"
+          style={{ borderColor: "var(--line)" }}
+          disabled={loadingMore}
+          onClick={onLoadMore}
+        >
+          {loadingMore ? "Loading…" : "Load more"}
+        </button>
+      ) : null}
     </section>
   );
 }

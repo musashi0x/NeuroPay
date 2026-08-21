@@ -1,10 +1,8 @@
 {
   "extends": "@neuro-pay/tsconfig/node.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "declarationMap": true
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "test", "vitest.config.ts", "eslint.config.js"]
 }

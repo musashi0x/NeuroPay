@@ -6,6 +6,7 @@ import {
   readOptionalPrivateKey,
   readPrivateKey,
   readSmallestUnits,
+  readTokenSymbol,
   readUrl,
   readWholeTokens,
   type EnvSource,
@@ -35,6 +36,11 @@ export function loadAppConfig(env: EnvSource = process.env): AppConfig {
         env,
         "TOKEN_ADDRESS",
         "ERC-20 that payments are denominated in",
+      ),
+      tokenSymbol: readTokenSymbol(
+        env,
+        "TOKEN_SYMBOL",
+        "ERC-20 symbol of TOKEN_ADDRESS, asserted against the contract at startup",
       ),
       tokenDecimals: readInteger(env, "TOKEN_DECIMALS", {
         purpose:

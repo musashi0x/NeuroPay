@@ -20,6 +20,7 @@ const ADMIN_KEY =
 const MINIMAL_ENV: EnvSource = {
   RPC_URL: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
   TOKEN_ADDRESS: "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd",
+  TOKEN_SYMBOL: "npUSD",
   TOKEN_DECIMALS: "18",
   PAY_TO: "0x000000000000000000000000000000000000dEaD",
   SETTLER_PRIVATE_KEY: SETTLER_KEY,
@@ -43,6 +44,7 @@ describe("loadAppConfig defaults", () => {
 
     expect(config.chain.chainId).toBe(DEFAULT_CHAIN_ID);
     expect(config.chain.chainId).toBe(97);
+    expect(config.chain.tokenSymbol).toBe("npUSD");
     expect(config.session.lifetimeSeconds).toBe(
       DEFAULT_SESSION_LIFETIME_SECONDS,
     );
@@ -100,6 +102,7 @@ describe("loadAppConfig missing required values", () => {
   const required = [
     "RPC_URL",
     "TOKEN_ADDRESS",
+    "TOKEN_SYMBOL",
     "TOKEN_DECIMALS",
     "PAY_TO",
     "SETTLER_PRIVATE_KEY",
@@ -135,6 +138,8 @@ describe("loadAppConfig malformed values", () => {
     ["RPC_URL", "not-a-url"],
     ["RPC_URL", "ftp://example.invalid"],
     ["TOKEN_ADDRESS", "0xdeadbeef"],
+    ["TOKEN_SYMBOL", "US DC"],
+    ["TOKEN_SYMBOL", "1USD"],
     ["TOKEN_DECIMALS", "18.0"],
     ["PAY_TO", "not-an-address"],
     ["CHAIN_ID", "0"],

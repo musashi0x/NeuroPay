@@ -26,6 +26,13 @@ export type ChainConfig = {
   rpcUrl: string;
   token: Address;
   /**
+   * ERC-20 `symbol()` of `token`, from config and never a literal. Asserted
+   * against the contract at startup together with `decimals()` and the
+   * presence of code at the address — decimals-only validation is how a
+   * near-inert third-party token default survived for months.
+   */
+  tokenSymbol: string;
+  /**
    * Decimals of `token`, from config and never a literal. Asserted against the
    * token contract's `decimals()` at startup: a cap written for 6 decimals is
    * ~10^12 too small on an 18-decimal chain, and every payment reverts against

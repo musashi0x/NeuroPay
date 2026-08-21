@@ -13,6 +13,25 @@ export type StreamEndReason =
   | "abandoned";
 
 /**
+ * Console/API lifecycle of a stream.
+ *
+ * Derived from `endReason`, never stored separately, so the ledger's
+ * `stream.ended` / `stream.abandoned` events and this view cannot
+ * disagree. `abandoned` is first-class: collapsing it into `ended`
+ * hides the idle-sweep outcome the operator is looking for.
+ */
+export type StreamStatus = "active" | "ended" | "abandoned";
+
+/** Project `endReason` onto the three-state console lifecycle. */
+export function streamStatusFromEndReason(
+  endReason: StreamEndReason | null,
+): StreamStatus {
+  if (endReason === null) return "active";
+  if (endReason === "abandoned") return "abandoned";
+  return "ended";
+}
+
+/**
  * The response to opening a stream (`POST /v1/streams`).
  *
  * Carries everything a buyer needs to run its own mirror meter and to size a
@@ -69,9 +88,11 @@ export type SegmentResponse = {
  */
 export type StreamView = {
   streamId: string;
-  status: "active" | "ended";
+  status: StreamStatus;
   endReason: StreamEndReason | null;
   priceSheet: PriceSheet;
+  /** ERC-20 symbol of the stream's settlement token, from seller config. */
+  tokenSymbol: string;
   accruedUnpaid: SmallestUnits;
   totalAccrued: SmallestUnits;
   deliveredCalls: number;

@@ -13,6 +13,7 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import type { LedgerEventType, StreamStatus } from "@neuro-pay/types";
 import { toJsonSafe } from "../json.js";
 import { getLog } from "../middleware.js";
 import {
@@ -20,6 +21,71 @@ import {
   type ConsoleService,
   type OperatorContext,
 } from "./service.js";
+import type { PaymentListQuery, StreamListQuery } from "./page.js";
+
+const LEDGER_EVENTS = new Set<LedgerEventType>([
+  "stream.opened",
+  "stream.ended",
+  "stream.abandoned",
+  "settlement.retry",
+  "settlement.recovered",
+  "accrual.recorded",
+  "payment.demanded",
+  "payment.refused",
+  "payment.signed",
+  "payment.verified",
+  "payment.rejected",
+  "segment.delivered",
+  "settlement.submitted",
+  "settlement.confirmed",
+  "settlement.failed",
+  "payment.settlement.submitted",
+  "payment.settlement.confirmed",
+  "payment.settlement.failed",
+  "payment.settlement.lost",
+  "session.granted",
+  "session.revoked",
+]);
+
+const STREAM_STATUSES = new Set<StreamStatus>(["active", "ended", "abandoned"]);
+
+function parseLimit(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (!/^\d+$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
+function parseStreamQuery(c: {
+  req: { query: (k: string) => string | undefined };
+}): StreamListQuery {
+  const query: StreamListQuery = {};
+  const limit = parseLimit(c.req.query("limit"));
+  if (limit !== undefined) query.limit = limit;
+  const cursor = c.req.query("cursor");
+  if (cursor !== undefined) query.cursor = cursor;
+  const status = c.req.query("status");
+  if (status !== undefined && STREAM_STATUSES.has(status as StreamStatus)) {
+    query.status = status as StreamStatus;
+  }
+  return query;
+}
+
+function parsePaymentQuery(c: {
+  req: { query: (k: string) => string | undefined };
+}): PaymentListQuery {
+  const query: PaymentListQuery = {};
+  const limit = parseLimit(c.req.query("limit"));
+  if (limit !== undefined) query.limit = limit;
+  const cursor = c.req.query("cursor");
+  if (cursor !== undefined) query.cursor = cursor;
+  const event = c.req.query("event");
+  if (event !== undefined && LEDGER_EVENTS.has(event as LedgerEventType)) {
+    query.event = event as LedgerEventType;
+  }
+  const streamId = c.req.query("streamId");
+  if (streamId !== undefined) query.streamId = streamId;
+  return query;
+}
 
 export type ConsoleRouteDeps = {
   console: ConsoleService;
@@ -52,13 +118,19 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   app.get("/v1/streams", async (c) => {
-    const streams = await deps.console.listStreams();
-    return c.json(toJsonSafe({ streams }), 200);
+    const page = await deps.console.listStreams(parseStreamQuery(c));
+    return c.json(
+      toJsonSafe({ streams: page.items, nextCursor: page.nextCursor }),
+      200,
+    );
   });
 
   app.get("/v1/payments", async (c) => {
-    const payments = await deps.console.listPayments();
-    return c.json(toJsonSafe({ payments }), 200);
+    const page = await deps.console.listPayments(parsePaymentQuery(c));
+    return c.json(
+      toJsonSafe({ payments: page.items, nextCursor: page.nextCursor }),
+      200,
+    );
   });
 
   app.get("/v1/budget", async (c) => {

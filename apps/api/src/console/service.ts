@@ -20,6 +20,7 @@ import type {
   AuditOutcome,
   BudgetState,
   ConsoleSnapshot,
+  CursorPage,
   Hex,
   LedgerEntry,
   RevokeResult,
@@ -29,6 +30,16 @@ import type {
   SmallestUnits,
   StreamView,
 } from "@neuro-pay/types";
+import {
+  SNAPSHOT_PAYMENT_CAP,
+  streamStatusFromEndReason,
+} from "@neuro-pay/types";
+import {
+  paginatePayments,
+  paginateStreams,
+  type PaymentListQuery,
+  type StreamListQuery,
+} from "./page.js";
 import type {
   PersistedCallPermission,
   PersistedSession,
@@ -43,8 +54,8 @@ export type ConsoleLiveEvent = {
 
 export type ConsoleService = {
   getSession(): Promise<SessionPolicyView | null>;
-  listStreams(): Promise<StreamView[]>;
-  listPayments(): Promise<LedgerEntry[]>;
+  listStreams(query?: StreamListQuery): Promise<CursorPage<StreamView>>;
+  listPayments(query?: PaymentListQuery): Promise<CursorPage<LedgerEntry>>;
   getBudget(): Promise<BudgetState | null>;
   snapshot(): Promise<ConsoleSnapshot>;
   revoke(context?: OperatorContext): Promise<RevokeResult>;
@@ -135,12 +146,14 @@ export function createConsoleService(
       );
     },
 
-    async listStreams() {
-      return buildStreamViews(input, nowMs());
+    async listStreams(query = {}) {
+      const streams = await buildStreamViews(input, nowMs());
+      return paginateStreams(streams, query);
     },
 
-    async listPayments() {
-      return input.ledger.entries();
+    async listPayments(query = {}) {
+      const payments = await input.ledger.entries();
+      return paginatePayments(payments, query);
     },
 
     async getBudget() {
@@ -148,13 +161,18 @@ export function createConsoleService(
     },
 
     async snapshot() {
-      const [session, streams, budget, payments] = await Promise.all([
+      const [session, streamPage, budget, paymentPage] = await Promise.all([
         service.getSession(),
-        service.listStreams(),
+        service.listStreams({ limit: SNAPSHOT_PAYMENT_CAP }),
         service.getBudget(),
-        service.listPayments(),
+        service.listPayments({ limit: SNAPSHOT_PAYMENT_CAP }),
       ]);
-      return { session, streams, budget, payments };
+      return {
+        session,
+        streams: streamPage.items,
+        budget,
+        payments: paymentPage.items,
+      };
     },
 
     async revoke(context) {
@@ -339,8 +357,16 @@ export class ConsoleNotFoundError extends Error {
   }
 }
 
+/**
+ * The product is one session. The store is keyed by wallet and can hold
+ * more than one record, but the console always binds to the
+ * lexicographically first address so the choice is deterministic rather
+ * than Map insertion order. A selector UI is out of scope until the
+ * product supports concurrent sessions.
+ */
 function activeSession(store: SessionStore): PersistedSession | undefined {
-  const [wallet] = store.list();
+  const wallets = [...store.list()].sort();
+  const wallet = wallets[0];
   if (!wallet) return undefined;
   return store.read(wallet);
 }
@@ -373,6 +399,7 @@ function toPolicyView(
     spendCap: {
       token: (spend?.token ?? config.chain.token) as Address,
       tokenDecimals: config.chain.tokenDecimals,
+      tokenSymbol: config.chain.tokenSymbol,
       limit: (spend?.limit ?? config.session.spendCap) as SmallestUnits,
       periodSeconds,
     },
@@ -407,8 +434,9 @@ async function buildStreamViews(
     const inFlightSettlements = countInFlight(entries, stream.id);
     return {
       streamId: stream.id,
-      status: stream.endReason === null ? "active" : "ended",
+      status: streamStatusFromEndReason(stream.endReason),
       endReason: stream.endReason,
+      tokenSymbol: input.config.chain.tokenSymbol,
       priceSheet: stream.priceSheet,
       accruedUnpaid: stream.meter.accruedUnpaid,
       totalAccrued: stream.meter.totalAccrued,
@@ -492,6 +520,7 @@ async function buildBudget(
   return {
     token,
     tokenDecimals: input.config.chain.tokenDecimals,
+    tokenSymbol: input.config.chain.tokenSymbol,
     windowStart: new Date(now - periodSeconds * 1000).toISOString(),
     windowEnd: new Date(now).toISOString(),
     periodSeconds,

@@ -133,9 +133,11 @@ without `SETTLER_PRIVATE_KEY` advertises `payTo` as the spender, which is
 fine for the in-memory local loop and produces signatures that are **not**
 settleable on chain.
 
-One naming inconsistency: the product copy says USDC, while
-`.env.example` defaults `TOKEN_ADDRESS` to BSC testnet **USDT**. The chain
-config is authoritative — verify the address on the explorer before use.
+The default payment token is **npUSD** (`NeuroPayTestUSD`), this project's
+own mintable test token on chain 97 — not USDC or USDT. Product copy names
+the configured token (or says "test token"); `TOKEN_ADDRESS`,
+`TOKEN_SYMBOL`, and `TOKEN_DECIMALS` are asserted together against the
+contract at startup.
 
 ## Prerequisites
 
@@ -385,9 +387,9 @@ The agent pays for metered work with an Altana session key. A human approves a p
 ### Operator checklist (chain 97)
 
 1. Copy `apps/api/.env.example` to `apps/api/.env`. Leave secrets blank until you generate them. `pnpm dev` and `pnpm start` load that file automatically; nothing reads it during tests.
-2. Set `RPC_URL`, `TOKEN_ADDRESS`, `TOKEN_DECIMALS`, `PAY_TO`, `SETTLER_PRIVATE_KEY`, and `ADMIN_PRIVATE_KEY`.
+2. Set `RPC_URL`, `TOKEN_ADDRESS`, `TOKEN_SYMBOL`, `TOKEN_DECIMALS`, `PAY_TO`, `SETTLER_PRIVATE_KEY`, and `ADMIN_PRIVATE_KEY`.
 3. `SESSION_SPEND_CAP` is **whole tokens**, not smallest units. `10` on an 18-decimal token becomes `10e18`. Writing `10000000000000000000` here would become `10e36`.
-4. `TOKEN_DECIMALS` is asserted against the token contract at client startup. USDT/USDC are 18 decimals on BNB and 6 on Ethereum. The wrong value makes every payment revert against a cap that looks generous.
+4. Token identity is asserted at startup: the address must have contract code, `symbol()` must equal `TOKEN_SYMBOL`, and `decimals()` must equal `TOKEN_DECIMALS`. A decimals-only check is how a near-inert third-party token default survived for months. The wrong decimals still make every payment revert against a cap that looks generous.
 5. Fund the settler EOA with testnet BNB (gas). A drained settler is reported as its own alarm; verification still passes.
 6. Provision the wallet and session. The grant is written to
    `SESSION_STORE_PATH` (default `.data/session.json`) — the same file the
@@ -526,6 +528,7 @@ So readiness is a separate surface with a probe per dependency:
 | Route                               | Auth           | What it answers                                          |
 | ----------------------------------- | -------------- | -------------------------------------------------------- |
 | `GET /health`                       | none           | Liveness. Always `ok` while the process runs.            |
+| `GET /openapi.json`                 | none           | OpenAPI 3.1 document of buyer and operator routes.       |
 | `GET /ready`                        | none           | Readiness. Check names and verdicts only. 503 when down. |
 | `GET /v1/health`                    | operator token | The same report with probe messages and firing alerts.   |
 | `GET /metrics`                      | operator token | Prometheus exposition.                                   |
@@ -540,8 +543,8 @@ reachable. The diagnosis (which RPC, which token contract, which settler
 address, and why each probe is unhappy) stays behind the token.
 
 The probes check the _claims configuration makes_, not merely that a call
-returned: the RPC answers **and it is the configured chain**; the token's
-`decimals()` answers **and it matches config**; Permit2 has code at the
+returned: the RPC answers **and it is the configured chain**; the token
+has code **and** `symbol()`/`decimals()` match config; Permit2 has code at the
 canonical address. The difference is a whole class of misconfiguration
 that otherwise surfaces as an unexplained revert after a segment has
 already been delivered.

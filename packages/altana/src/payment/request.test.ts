@@ -175,6 +175,35 @@ describe("fetchWithX402 — 4xx re-classification", () => {
     }
   });
 
+  it("never reports eoa-only-facilitator as verification-failed", async () => {
+    const bodies = [
+      "ecrecover failed: invalid signature",
+      "invalid signature length",
+      "expected 65-byte signature",
+    ];
+    for (const body of bodies) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse(PAYMENT_REQUIRED_BODY, 402))
+        .mockResolvedValueOnce(makeResponse(body, 400));
+      try {
+        await fetchWithX402(URL, {
+          ...happyContext,
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        });
+        expect.fail(`expected PaymentFailureError for ${body}`);
+      } catch (err) {
+        expect(err).toBeInstanceOf(PaymentFailureError);
+        expect((err as PaymentFailureError).classification).toBe(
+          "eoa-only-facilitator",
+        );
+        expect((err as PaymentFailureError).classification).not.toBe(
+          "verification-failed",
+        );
+      }
+    }
+  });
+
   it("re-throws as verification-failed when the 4xx body is not an EOA-only pattern", async () => {
     const fetchImpl = vi
       .fn()
