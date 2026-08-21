@@ -83,6 +83,13 @@ export type ReadinessReport = {
   checkedAt: string;
   checks: ProbeResult[];
   alerts: Alert[];
+  /**
+   * Whether the runtime auto-revoke-on-failure safety net is armed.
+   * Metadata, not a verdict — does not affect `status`. Absent when
+   * no watcher is wired (older deployments or local dev without the
+   * payment runtime).
+   */
+  autoRevokeArmed?: boolean;
 };
 
 /**

@@ -92,7 +92,15 @@ export function createApp(deps: AppDeps = {}): Hono {
   if (deps.ops) {
     // Unauthenticated on purpose — see `ops/routes.ts` for what it does
     // and does not publish.
-    app.route("/", readinessRoute({ ops: deps.ops.ops }));
+    app.route(
+      "/",
+      readinessRoute({
+        ops: deps.ops.ops,
+        ...(deps.autoRevoke
+          ? { isAutoRevokeArmed: () => deps.autoRevoke!.status().enabled }
+          : {}),
+      }),
+    );
   }
 
   if (deps.seller) {
@@ -161,7 +169,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     // console does.
     const authedOps = new Hono();
     authedOps.use("*", consoleAuth(deps.consoleAuth ?? resolveConsoleAuth()));
-    authedOps.route("/", opsRoutes(deps.ops));
+    authedOps.route(
+      "/",
+      opsRoutes({
+        ...deps.ops,
+        ...(deps.autoRevoke
+          ? { isAutoRevokeArmed: () => deps.autoRevoke!.status().enabled }
+          : {}),
+      }),
+    );
     app.route("/", authedOps);
   }
 
