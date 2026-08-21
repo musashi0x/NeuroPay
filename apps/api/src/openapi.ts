@@ -311,7 +311,9 @@ export const openApiDocument = {
             description: "AutoRevokeOnFailureView",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/AutoRevokeOnFailureView" },
+                schema: {
+                  $ref: "#/components/schemas/AutoRevokeOnFailureView",
+                },
               },
             },
           },
@@ -341,7 +343,9 @@ export const openApiDocument = {
             description: "New AutoRevokeOnFailureView",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/AutoRevokeOnFailureView" },
+                schema: {
+                  $ref: "#/components/schemas/AutoRevokeOnFailureView",
+                },
               },
             },
           },

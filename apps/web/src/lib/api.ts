@@ -109,9 +109,7 @@ export async function fetchAutoRevoke(): Promise<AutoRevokeOnFailureView> {
     throw new Error("auto-revoke watcher is not wired");
   }
   if (!response.ok) {
-    throw new Error(
-      `auto-revoke fetch failed with ${response.status}`,
-    );
+    throw new Error(`auto-revoke fetch failed with ${response.status}`);
   }
   return reviveWire(await response.json()) as AutoRevokeOnFailureView;
 }
@@ -133,9 +131,7 @@ export async function setAutoRevoke(
   }
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(
-      `auto-revoke set failed with ${response.status}: ${text}`,
-    );
+    throw new Error(`auto-revoke set failed with ${response.status}: ${text}`);
   }
   return reviveWire(await response.json()) as AutoRevokeOnFailureView;
 }

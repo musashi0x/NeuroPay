@@ -86,8 +86,8 @@ export function AutoRevokeSwitch() {
         </h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
           When armed, the runtime fires the kill switch automatically if the
-          unrecovered-failure count crosses the critical threshold. Process-local;
-          resets on restart.
+          unrecovered-failure count crosses the critical threshold.
+          Process-local; resets on restart.
         </p>
         {state.lastFiredAt ? (
           <p className="mt-1 font-mono text-xs text-[var(--muted)]">
@@ -95,10 +95,7 @@ export function AutoRevokeSwitch() {
           </p>
         ) : null}
         {error ? (
-          <p
-            className="mt-1 text-sm"
-            style={{ color: "var(--bad)" }}
-          >
+          <p className="mt-1 text-sm" style={{ color: "var(--bad)" }}>
             {error}
           </p>
         ) : null}

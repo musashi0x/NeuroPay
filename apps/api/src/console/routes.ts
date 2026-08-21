@@ -267,7 +267,11 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
       await recordAutoRevokeEvent(deps.ledger, "session.auto-revoke.armed", c);
     } else if (!body.enabled && before.enabled) {
       deps.autoRevoke.disarm();
-      await recordAutoRevokeEvent(deps.ledger, "session.auto-revoke.disarmed", c);
+      await recordAutoRevokeEvent(
+        deps.ledger,
+        "session.auto-revoke.disarmed",
+        c,
+      );
     }
     return c.json(toJsonSafe(deps.autoRevoke.status()), 200);
   });

@@ -13,7 +13,10 @@ describe("fetchAutoRevoke", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe("/api/console/v1/session/auto-revoke");
       return new Response(
-        JSON.stringify({ enabled: true, lastFiredAt: "2026-08-21T10:00:00.000Z" }),
+        JSON.stringify({
+          enabled: true,
+          lastFiredAt: "2026-08-21T10:00:00.000Z",
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     });
@@ -24,12 +27,16 @@ describe("fetchAutoRevoke", () => {
   });
 
   it("throws a friendly error on 404 (watcher not wired)", async () => {
-    globalThis.fetch = vi.fn(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(
+      async () => new Response("", { status: 404 }),
+    ) as unknown as typeof fetch;
     await expect(fetchAutoRevoke()).rejects.toThrow("not wired");
   });
 
   it("throws on a non-2xx response other than 404", async () => {
-    globalThis.fetch = vi.fn(async () => new Response("", { status: 500 })) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(
+      async () => new Response("", { status: 500 }),
+    ) as unknown as typeof fetch;
     await expect(fetchAutoRevoke()).rejects.toThrow("500");
   });
 });
@@ -57,7 +64,11 @@ describe("setAutoRevoke", () => {
   });
 
   it("throws a friendly error on 404 (watcher not wired)", async () => {
-    globalThis.fetch = vi.fn(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
-    await expect(setAutoRevoke({ enabled: false })).rejects.toThrow("not wired");
+    globalThis.fetch = vi.fn(
+      async () => new Response("", { status: 404 }),
+    ) as unknown as typeof fetch;
+    await expect(setAutoRevoke({ enabled: false })).rejects.toThrow(
+      "not wired",
+    );
   });
 });

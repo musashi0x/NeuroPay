@@ -155,10 +155,7 @@ export function createApp(deps: AppDeps = {}): Hono {
         }),
       );
     } else {
-      authed.route(
-        "/",
-        consoleRoutes({ console: deps.console }),
-      );
+      authed.route("/", consoleRoutes({ console: deps.console }));
     }
     app.route("/", authed);
   }
