@@ -1,6 +1,7 @@
 import type { StreamView } from "@neuro-pay/types";
 import { Amount } from "@/components/console/Amount";
-import { Row, StatusPill, type StatusTone } from "@/components/console/shared";
+import { Row, type StatusTone } from "@/components/console/shared";
+import { Pill } from "@/components/ui";
 
 function streamTone(status: StreamView["status"]): StatusTone {
   if (status === "active") return "ok";
@@ -38,10 +39,9 @@ export function StreamPanel({
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <p className="font-mono text-sm">{stream.streamId}</p>
-                <StatusPill
-                  tone={streamTone(stream.status)}
-                  label={streamLabel(stream)}
-                />
+                <Pill tone={streamTone(stream.status)}>
+                  {streamLabel(stream)}
+                </Pill>
               </div>
               <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
                 <div>

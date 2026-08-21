@@ -12,8 +12,8 @@ export function ConsoleHeader({ error }: { error: string | null }) {
           Settlement blotter
         </h1>
         <p className="mt-2 max-w-xl text-sm text-[var(--muted)]">
-          Live spend against the session a human approved. Signing stays on
-          the API. This page never sees a private key.
+          Live spend against the session a human approved. Signing stays on the
+          API. This page never sees a private key.
         </p>
       </div>
       {error ? (

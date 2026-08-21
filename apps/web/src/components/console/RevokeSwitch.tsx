@@ -1,5 +1,39 @@
+"use client";
+
+import { useState } from "react";
 import type { RevokeResult } from "@neuro-pay/types";
 import { Row } from "@/components/console/shared";
+import {
+  Button,
+  DialogCancelButton,
+  DialogContent,
+  DialogRoot,
+  DialogTrigger,
+} from "@/components/ui";
+
+/**
+ * Renders a `result` block when one is available, otherwise nothing.
+ * Kept separate so the main component's flow stays linear and the result
+ * presentation can be swapped without re-wiring the form.
+ */
+function RevokeResultBlock({ result }: { result: RevokeResult }) {
+  return (
+    <dl className="mt-4 space-y-2 text-sm">
+      <Row
+        label="Local"
+        value={result.local.revoked ? "signing stopped" : "still loaded"}
+      />
+      <Row
+        label="On-chain"
+        value={
+          result.onChain.revoked
+            ? `revoked${result.onChain.transactionHash ? ` · ${result.onChain.transactionHash}` : ""}`
+            : `not revoked${result.onChain.status ? ` · ${result.onChain.status}` : ""}`
+        }
+      />
+    </dl>
+  );
+}
 
 export function RevokeSwitch({
   confirming,
@@ -22,6 +56,12 @@ export function RevokeSwitch({
   onConfirm: () => void;
   onRetry: () => void;
 }) {
+  // The Radix dialog needs its own open state so that confirming/result
+  // transitions still flow through the parent's existing callbacks
+  // unchanged. We mirror `confirming` into the dialog open prop so esc and
+  // click-outside propagate back through onCancel.
+  const [dialogOpen, setDialogOpen] = useState(false);
+
   return (
     <section
       className="mt-6 border p-5"
@@ -38,78 +78,56 @@ export function RevokeSwitch({
         stage and can take a block. They are reported separately.
       </p>
 
-      {result ? (
-        <dl className="mt-4 space-y-2 text-sm">
-          <Row
-            label="Local"
-            value={result.local.revoked ? "signing stopped" : "still loaded"}
-          />
-          <Row
-            label="On-chain"
-            value={
-              result.onChain.revoked
-                ? `revoked${result.onChain.transactionHash ? ` · ${result.onChain.transactionHash}` : ""}`
-                : `not revoked${result.onChain.status ? ` · ${result.onChain.status}` : ""}`
-            }
-          />
-        </dl>
-      ) : null}
+      {result ? <RevokeResultBlock result={result} /> : null}
 
       {!confirming ? (
         <div className="mt-4 flex flex-wrap gap-3">
-          <button
-            type="button"
-            className="border px-4 py-2 text-sm font-medium"
-            style={{ borderColor: "var(--bad)", color: "var(--bad)" }}
-            onClick={onBegin}
+          <DialogRoot
+            open={dialogOpen}
+            onOpenChange={(open) => {
+              setDialogOpen(open);
+              if (open) onBegin();
+              else onCancel();
+            }}
           >
-            Revoke session
-          </button>
-          {result && !result.onChain.revoked ? (
-            <button
-              type="button"
-              className="border px-4 py-2 text-sm"
-              style={{ borderColor: "var(--line)" }}
-              onClick={onRetry}
+            <DialogTrigger asChild>
+              <Button tone="danger">Revoke session</Button>
+            </DialogTrigger>
+            <DialogContent
+              title="Revoke session"
+              description="This stops signing immediately. On-chain revoke is reported separately and can take a block."
             >
+              <p className="text-sm">
+                Type <span className="font-mono">REVOKE</span> to confirm. This
+                cannot be undone from the console.
+              </p>
+              <input
+                value={phrase}
+                onChange={(event) => onPhrase(event.target.value)}
+                className="mt-3 w-full max-w-xs border bg-transparent px-3 py-2 font-mono text-sm"
+                style={{ borderColor: "var(--line)" }}
+                autoComplete="off"
+                autoFocus
+              />
+              <div className="mt-4 flex gap-3">
+                <Button
+                  tone="danger"
+                  disabled={phrase !== "REVOKE" || revoking}
+                  onClick={onConfirm}
+                >
+                  {revoking ? "Revoking…" : "Confirm revoke"}
+                </Button>
+                <DialogCancelButton>Cancel</DialogCancelButton>
+              </div>
+            </DialogContent>
+          </DialogRoot>
+          {result && !result.onChain.revoked ? (
+            <Button tone="neutral" onClick={onRetry}>
               Retry on-chain revoke
-            </button>
+            </Button>
           ) : null}
         </div>
-      ) : (
-        <div className="mt-4 space-y-3">
-          <p className="text-sm">
-            Type <span className="font-mono">REVOKE</span> to confirm. This
-            cannot be undone from the console.
-          </p>
-          <input
-            value={phrase}
-            onChange={(event) => onPhrase(event.target.value)}
-            className="w-full max-w-xs border bg-transparent px-3 py-2 font-mono text-sm"
-            style={{ borderColor: "var(--line)" }}
-            autoComplete="off"
-          />
-          <div className="flex gap-3">
-            <button
-              type="button"
-              disabled={phrase !== "REVOKE" || revoking}
-              className="border px-4 py-2 text-sm font-medium disabled:opacity-40"
-              style={{ borderColor: "var(--bad)", color: "var(--bad)" }}
-              onClick={onConfirm}
-            >
-              {revoking ? "Revoking…" : "Confirm revoke"}
-            </button>
-            <button
-              type="button"
-              className="border px-4 py-2 text-sm"
-              style={{ borderColor: "var(--line)" }}
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }
