@@ -16,11 +16,14 @@ import { useSettlementToasts } from "@/components/console/useSettlementToasts";
 import { ToastProvider } from "@/components/ui";
 
 /**
- * Composition root for the stream console. Data loading lives in
- * `useConsoleSnapshot`; settlement-lifecycle toasts ride the SSE stream
- * via `useSettlementToasts`; each panel owns its own presentation.
+ * Inner body of the console. Lives inside <ToastProvider> so hooks that
+ * depend on the toast context (useSettlementToasts, the Switch-backed
+ * mute row) resolve correctly. Splitting it out is what keeps the
+ * provider boundary honest: a hook that throws outside the provider
+ * will throw at compile-of-runtime inside this component, not at the
+ * call site above.
  */
-export function ConsoleApp() {
+function ConsoleBody() {
   const {
     snapshot,
     paymentCursor,
@@ -60,42 +63,52 @@ export function ConsoleApp() {
   const symbol = configuredSymbol(snapshot);
 
   return (
+    <main className="mx-auto min-h-screen max-w-6xl px-6 py-10">
+      <ConsoleHeader error={error} />
+
+      <div className="mt-8 grid gap-6 lg:grid-cols-2">
+        <SessionPanel session={snapshot.session} symbol={symbol} />
+        <BudgetPanel budget={snapshot.budget} symbol={symbol} />
+      </div>
+
+      <StreamPanel streams={snapshot.streams} symbol={symbol} />
+      <HistoryPanel
+        payments={snapshot.payments}
+        symbol={symbol}
+        nextCursor={paymentCursor}
+        loadingMore={loadingMore}
+        onLoadMore={loadMore}
+      />
+      <MuteToastsRow />
+      <RevokeSwitch
+        confirming={confirming}
+        phrase={revokePhrase}
+        revoking={revoking}
+        result={revokeResult}
+        onBegin={() => setConfirming(true)}
+        onCancel={() => {
+          setConfirming(false);
+          setRevokePhrase("");
+        }}
+        onPhrase={setRevokePhrase}
+        onConfirm={() => void onRevoke()}
+        onRetry={() => {
+          setConfirming(true);
+          setRevokePhrase("");
+        }}
+      />
+    </main>
+  );
+}
+
+/**
+ * Composition root. The provider boundary is the entire job of this
+ * component — every other concern lives in ConsoleBody.
+ */
+export function ConsoleApp() {
+  return (
     <ToastProvider>
-      <main className="mx-auto min-h-screen max-w-6xl px-6 py-10">
-        <ConsoleHeader error={error} />
-
-        <div className="mt-8 grid gap-6 lg:grid-cols-2">
-          <SessionPanel session={snapshot.session} symbol={symbol} />
-          <BudgetPanel budget={snapshot.budget} symbol={symbol} />
-        </div>
-
-        <StreamPanel streams={snapshot.streams} symbol={symbol} />
-        <HistoryPanel
-          payments={snapshot.payments}
-          symbol={symbol}
-          nextCursor={paymentCursor}
-          loadingMore={loadingMore}
-          onLoadMore={loadMore}
-        />
-        <MuteToastsRow />
-        <RevokeSwitch
-          confirming={confirming}
-          phrase={revokePhrase}
-          revoking={revoking}
-          result={revokeResult}
-          onBegin={() => setConfirming(true)}
-          onCancel={() => {
-            setConfirming(false);
-            setRevokePhrase("");
-          }}
-          onPhrase={setRevokePhrase}
-          onConfirm={() => void onRevoke()}
-          onRetry={() => {
-            setConfirming(true);
-            setRevokePhrase("");
-          }}
-        />
-      </main>
+      <ConsoleBody />
     </ToastProvider>
   );
 }
