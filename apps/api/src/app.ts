@@ -13,9 +13,12 @@ import {
   rateLimit,
   type RateLimiter,
 } from "./rate-limit.js";
-import { consoleRoutes, type ConsoleRouteDeps } from "./console/routes.js";
+import { consoleRoutes } from "./console/routes.js";
 import { opsRoutes, readinessRoute, type OpsRouteDeps } from "./ops/routes.js";
 import { openApiDocument } from "./openapi.js";
+import type { LedgerStore } from "@neuro-pay/ledger";
+import type { AutoRevokeWatcher } from "./console/auto-revoke-watcher.js";
+import type { ConsoleService } from "./console/service.js";
 import { openStreamRoute, type OpenStreamDeps } from "./routes/streams/open.js";
 import {
   nextSegmentRoute,
@@ -23,7 +26,11 @@ import {
 } from "./routes/streams/next.js";
 
 export type AppDeps = {
-  console?: ConsoleRouteDeps["console"];
+  console?: ConsoleService;
+  /** Audit-trail sink for the auto-revoke arm/disarm audit entries. */
+  ledger?: LedgerStore;
+  /** Runtime auto-revoke watcher; required when `console` is set. */
+  autoRevoke?: AutoRevokeWatcher;
   /**
    * Readiness, metrics, and the audit trail. Mounted independently of
    * `console` so a process with no payment runtime can still be probed.
@@ -62,7 +69,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     "*",
     cors({
       origin: corsOrigin,
-      allowMethods: ["GET", "HEAD", "OPTIONS", "POST"],
+      allowMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT"],
       // `Authorization` is listed because the console now sends a bearer
       // token; without it the browser's preflight rejects every console
       // request before it is sent.
@@ -85,7 +92,15 @@ export function createApp(deps: AppDeps = {}): Hono {
   if (deps.ops) {
     // Unauthenticated on purpose — see `ops/routes.ts` for what it does
     // and does not publish.
-    app.route("/", readinessRoute({ ops: deps.ops.ops }));
+    app.route(
+      "/",
+      readinessRoute({
+        ops: deps.ops.ops,
+        ...(deps.autoRevoke
+          ? { isAutoRevokeArmed: () => deps.autoRevoke!.status().enabled }
+          : {}),
+      }),
+    );
   }
 
   if (deps.seller) {
@@ -124,7 +139,24 @@ export function createApp(deps: AppDeps = {}): Hono {
     const authed = new Hono();
     const mode = deps.consoleAuth ?? resolveConsoleAuth();
     authed.use("*", consoleAuth(mode));
-    authed.route("/", consoleRoutes({ console: deps.console }));
+    // The new auto-revoke routes require both ledger (for audit
+    // writes) and autoRevoke (the watcher itself). When a deployment
+    // does not pass them, the existing console routes still mount
+    // and the new routes are simply absent — `GET` and `PUT
+    // /v1/session/auto-revoke` return 404, which matches the
+    // additive spec contract.
+    if (deps.ledger && deps.autoRevoke) {
+      authed.route(
+        "/",
+        consoleRoutes({
+          console: deps.console,
+          ledger: deps.ledger,
+          autoRevoke: deps.autoRevoke,
+        }),
+      );
+    } else {
+      authed.route("/", consoleRoutes({ console: deps.console }));
+    }
     app.route("/", authed);
   }
 
@@ -134,7 +166,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     // console does.
     const authedOps = new Hono();
     authedOps.use("*", consoleAuth(deps.consoleAuth ?? resolveConsoleAuth()));
-    authedOps.route("/", opsRoutes(deps.ops));
+    authedOps.route(
+      "/",
+      opsRoutes({
+        ...deps.ops,
+        ...(deps.autoRevoke
+          ? { isAutoRevokeArmed: () => deps.autoRevoke!.status().enabled }
+          : {}),
+      }),
+    );
     app.route("/", authedOps);
   }
 

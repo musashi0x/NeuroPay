@@ -1,0 +1,33 @@
+{
+  "name": "@neuro-pay/showcase",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3001",
+    "build": "next build",
+    "start": "next start --port 3001",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:no-server": "node scripts/check-no-server-imports.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@neuro-pay/altana": "workspace:*",
+    "@neuro-pay/metering": "workspace:*",
+    "@neuro-pay/types": "workspace:*",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@neuro-pay/eslint-config": "workspace:*",
+    "@neuro-pay/tsconfig": "workspace:*",
+    "@types/node": "^22.18.12",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

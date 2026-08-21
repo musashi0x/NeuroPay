@@ -58,7 +58,10 @@ export type ConsoleService = {
   listPayments(query?: PaymentListQuery): Promise<CursorPage<LedgerEntry>>;
   getBudget(): Promise<BudgetState | null>;
   snapshot(): Promise<ConsoleSnapshot>;
-  revoke(context?: OperatorContext): Promise<RevokeResult>;
+  revoke(
+    context?: OperatorContext,
+    options?: RevokeOptions,
+  ): Promise<RevokeResult>;
   /** Resubmit the on-chain stage of a revoke whose first attempt failed. */
   retryRevoke(context?: OperatorContext): Promise<RevokeResult>;
   /**
@@ -89,6 +92,17 @@ export type ConsoleService = {
 export type OperatorContext = {
   actor?: string;
   requestId?: string | null;
+};
+
+/**
+ * Override the audit action the kill switch records. The default is
+ * `"session.revoke.requested"`, which the manual console button
+ * uses; the auto-revoke watcher passes its own action so the trail
+ * distinguishes operator-initiated from runtime-initiated revokes.
+ */
+export type RevokeOptions = {
+  auditAction?: AuditAction;
+  detail?: string;
 };
 
 export type CreateConsoleServiceInput = {
@@ -175,14 +189,16 @@ export function createConsoleService(
       };
     },
 
-    async revoke(context) {
+    async revoke(context, options) {
       const persisted = activeSession(input.sessions);
+      const auditAction: AuditAction =
+        options?.auditAction ?? "session.revoke.requested";
       if (!persisted) {
         await audit(input.ledger, context, {
-          action: "session.revoke.requested",
+          action: auditAction,
           outcome: "failed",
           subject: null,
-          detail: "no active session",
+          detail: options?.detail ?? "no active session",
         });
         throw new ConsoleNotFoundError("no active session to revoke");
       }
@@ -209,13 +225,15 @@ export function createConsoleService(
       });
 
       await audit(input.ledger, context, {
-        action: "session.revoke.requested",
+        action: auditAction,
         // The local stage is what stops signing, and it is synchronous.
         // A pending on-chain stage is still a successful request; its
         // own outcome arrives as a later retry record.
         outcome: result.local.revoked ? "succeeded" : "failed",
         subject: persisted.walletAddress,
-        detail: `onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
+        detail:
+          options?.detail ??
+          `onChain=${result.onChain.revoked} status=${result.onChain.status ?? "null"}`,
       });
 
       service.notify();

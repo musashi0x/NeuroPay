@@ -106,12 +106,24 @@ function harness(
     now: () => NOW,
     ...overrides,
   });
+  // The auto-revoke watcher is wired through runtime.ts in production;
+  // tests of the console API don't exercise the watcher, so a stub
+  // with the same shape is enough to satisfy the deps check.
+  const autoRevoke = {
+    arm: () => {},
+    disarm: () => {},
+    status: () => ({ enabled: false, lastFiredAt: null }),
+    evaluate: async () => {},
+    close: () => {},
+  };
   const app = createApp({
     console: consoleService,
     seller,
+    ledger,
+    autoRevoke,
     corsOrigin: "http://localhost:3000",
   });
-  return { app, consoleService, seller, sessions, ledger, cfg };
+  return { app, consoleService, seller, sessions, ledger, autoRevoke, cfg };
 }
 
 describe("console API", () => {

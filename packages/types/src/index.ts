@@ -49,7 +49,12 @@ export type {
   SessionPolicyView,
   SessionStatus,
 } from "./session.js";
-export type { ConsoleSnapshot, CursorPage } from "./console.js";
+export type {
+  AutoRevokeOnFailureView,
+  ConsoleSnapshot,
+  CursorPage,
+  SetAutoRevokeRequest,
+} from "./console.js";
 export {
   DEFAULT_LIST_LIMIT,
   MAX_LIST_LIMIT,

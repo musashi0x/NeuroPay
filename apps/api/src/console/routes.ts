@@ -13,14 +13,22 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { LedgerEventType, StreamStatus } from "@neuro-pay/types";
+import type {
+  AuditAction,
+  AuditOutcome,
+  LedgerEventType,
+  StreamStatus,
+} from "@neuro-pay/types";
+import type { LedgerStore } from "@neuro-pay/ledger";
 import { toJsonSafe } from "../json.js";
 import { getLog } from "../middleware.js";
+import { logger } from "../logger.js";
 import {
   ConsoleNotFoundError,
   type ConsoleService,
   type OperatorContext,
 } from "./service.js";
+import type { AutoRevokeWatcher } from "./auto-revoke-watcher.js";
 import type { PaymentListQuery, StreamListQuery } from "./page.js";
 
 const LEDGER_EVENTS = new Set<LedgerEventType>([
@@ -89,6 +97,20 @@ function parsePaymentQuery(c: {
 
 export type ConsoleRouteDeps = {
   console: ConsoleService;
+  /**
+   * Audit-trail sink for the auto-revoke arm/disarm events. Optional
+   * so existing test harnesses that do not exercise the auto-revoke
+   * routes can mount the rest of the console without wiring one. The
+   * auto-revoke routes require it; the existing console routes do
+   * not.
+   */
+  ledger?: LedgerStore;
+  /**
+   * Runtime auto-revoke watcher. Optional for the same reason as
+   * `ledger`. The auto-revoke routes require it; the existing
+   * console routes do not.
+   */
+  autoRevoke?: AutoRevokeWatcher;
 };
 
 /**
@@ -213,6 +235,47 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
     }
   });
 
+  // ----- Auto-revoke-on-failure routes (operator token) ------------------
+
+  app.get("/v1/session/auto-revoke", (c) => {
+    if (!deps.autoRevoke) {
+      return c.json(
+        { error: { message: "auto-revoke watcher is not wired" } },
+        404,
+      );
+    }
+    return c.json(toJsonSafe(deps.autoRevoke.status()), 200);
+  });
+
+  app.put("/v1/session/auto-revoke", async (c) => {
+    if (!deps.autoRevoke || !deps.ledger) {
+      return c.json(
+        { error: { message: "auto-revoke watcher is not wired" } },
+        404,
+      );
+    }
+    const body = (await c.req.json().catch(() => null)) as unknown;
+    if (!isSetAutoRevokeRequest(body)) {
+      return c.json(
+        { error: { message: "body must be { enabled: boolean }" } },
+        400,
+      );
+    }
+    const before = deps.autoRevoke.status();
+    if (body.enabled && !before.enabled) {
+      deps.autoRevoke.arm();
+      await recordAutoRevokeEvent(deps.ledger, "session.auto-revoke.armed", c);
+    } else if (!body.enabled && before.enabled) {
+      deps.autoRevoke.disarm();
+      await recordAutoRevokeEvent(
+        deps.ledger,
+        "session.auto-revoke.disarmed",
+        c,
+      );
+    }
+    return c.json(toJsonSafe(deps.autoRevoke.status()), 200);
+  });
+
   app.get("/v1/events", (c) => {
     return streamSSE(c, async (stream) => {
       const snapshot = await deps.console.snapshot();
@@ -251,4 +314,51 @@ export function consoleRoutes(deps: ConsoleRouteDeps): Hono {
   });
 
   return app;
+}
+
+/**
+ * Narrow an arbitrary JSON body to { enabled: boolean }.
+ *
+ * Used by PUT /v1/session/auto-revoke to reject malformed bodies
+ * with 400 before flipping the runtime flag. Anything other than a
+ * plain object with a boolean `enabled` field is a 400.
+ */
+function isSetAutoRevokeRequest(value: unknown): value is { enabled: boolean } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "enabled" in value &&
+    typeof (value as { enabled: unknown }).enabled === "boolean"
+  );
+}
+
+/**
+ * Append a single arm/disarm audit row.
+ *
+ * Same swallow-the-audit policy as the console service: a failed
+ * write logs a warning but does not break the route, because the
+ * route's purpose is to flip a runtime flag and the trail is a
+ * bookkeeping nicety.
+ */
+async function recordAutoRevokeEvent(
+  ledger: LedgerStore,
+  action: AuditAction,
+  c: { get: (key: "requestId") => string | undefined },
+): Promise<void> {
+  const outcome: AuditOutcome = "succeeded";
+  try {
+    await ledger.appendAudit({
+      action,
+      actor: "operator",
+      outcome,
+      subject: null,
+      requestId: c.get("requestId") ?? null,
+      detail: "",
+    });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err), action },
+      "auto-revoke audit write failed",
+    );
+  }
 }

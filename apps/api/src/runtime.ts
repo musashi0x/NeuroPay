@@ -79,6 +79,10 @@ import {
   createConsoleService,
   type ConsoleService,
 } from "./console/service.js";
+import {
+  createAutoRevokeWatcher,
+  type AutoRevokeWatcher,
+} from "./console/auto-revoke-watcher.js";
 import { logger } from "./logger.js";
 import { CONSOLE_TOKEN_ENV, resolveConsoleAuth } from "./auth.js";
 
@@ -87,6 +91,12 @@ export type PaymentRuntime = {
   seller: Seller;
   ops: OpsService;
   ledger: LedgerStore;
+  /**
+   * Auto-revoke-on-failure watcher. Process-local; the flag defaults
+   * to disarmed and resets on every restart. Exposed for the
+   * operator routes (`GET/PUT /v1/session/auto-revoke`).
+   */
+  autoRevoke: AutoRevokeWatcher;
   close: () => Promise<void>;
 };
 
@@ -235,6 +245,15 @@ export function tryCreateRuntime(
     thresholds: alertThresholds,
   });
 
+  const autoRevoke = createAutoRevokeWatcher({
+    ledger,
+    sessions,
+    consoleService,
+    ops,
+    failedSettlementCritical: alertThresholds.failedSettlementCritical,
+    sweepIntervalMs: readOptionalPositiveInt(env, "STREAM_SWEEP_INTERVAL_MS"),
+  });
+
   // The audit trail's first record. A process that started is the
   // context every later administrative action is read against — without
   // it, a revoke at 03:00 gives no way to tell whether the process had
@@ -291,8 +310,10 @@ export function tryCreateRuntime(
     seller,
     ops,
     ledger,
+    autoRevoke,
     close: async () => {
       clearInterval(sweepTimer);
+      autoRevoke.close();
       await seller.shutdown();
       try {
         await ledger.appendAudit({

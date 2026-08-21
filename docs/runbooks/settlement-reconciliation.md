@@ -193,3 +193,74 @@ curl -sS -H "Authorization: Bearer $CONSOLE_API_TOKEN" \
 
 Every record carries the actor, the outcome, and the HTTP request id,
 which ties it back to the access log line with the source and timing.
+
+---
+
+## Auto-revoke on critical failure
+
+A process-local safety net for the worst failure mode: the seller keeps
+delivering and stops getting paid. When the `failedUnrecovered` count
+crosses `ALERT_FAILED_SETTLEMENTS_CRITICAL`, the runtime can perform
+the same kill switch the manual console button triggers — local revoke
+followed by on-chain revoke.
+
+### Arming the safety net
+
+The flag is process-local. A fresh process starts disarmed. Arm it from
+the console (the `Auto-revoke on critical failure` row) or via the API:
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $CONSOLE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}' \
+  http://localhost:4000/v1/session/auto-revoke
+```
+
+A fresh `GET` confirms the state:
+
+```bash
+curl -sS -H "Authorization: Bearer $CONSOLE_API_TOKEN" \
+  http://localhost:4000/v1/session/auto-revoke
+# => { "enabled": true, "lastFiredAt": null }
+```
+
+`GET /ready` (unauthenticated) and `GET /v1/health` (operator) both
+carry an `autoRevokeArmed: boolean` field. An operator confirming a
+fresh deploy should see `autoRevokeArmed: false` until the flag is
+flipped.
+
+### What happens when the threshold trips
+
+The watcher ticks on the same cadence as the existing stream sweep
+(default 30s). On the first tick where the count is at or above
+`ALERT_FAILED_SETTLEMENTS_CRITLED`, the runtime performs the kill
+switch. The audit trail records two entries:
+
+- `session.revoke.requested` — the same entry a manual operator
+  produces, marking the kill switch as invoked.
+- `session.auto-revoke.fired` — written by the watcher with the
+  trigger context: `count=<n> threshold=<t> wallet=<wallet>`.
+
+### Latch and re-arming
+
+The trigger is latched: once the count is at or above the threshold,
+subsequent ticks do not re-fire. The latch releases only when the
+count drops back below the threshold, and a fresh crossing fires
+again. This avoids a flood of audit rows during an active bleed.
+
+### Restart behavior
+
+The flag is process-local. A process restart returns the runtime to
+the disarmed state. A different process is a different operator at a
+different moment in time, and a forgotten dev process that
+inherited auto-revoke from a previous operator is the failure mode
+this design avoids.
+
+### What this does NOT do
+
+- It does not retry failed settlements. The runbook still says to
+  diagnose, fix the shared cause, and retry each nonce explicitly.
+- It does not persist the flag. Restart requires re-arming.
+- It does not change the alert thresholds. The existing
+  `ALERT_FAILED_SETTLEMENTS_CRITICAL` is the trigger; tune that
+  number to tune the auto-revoke.

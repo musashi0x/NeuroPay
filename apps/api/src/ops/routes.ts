@@ -32,11 +32,19 @@ import type { OpsService } from "./service.js";
 
 export type ReadinessRouteDeps = {
   ops: Pick<OpsService, "readiness">;
+  /**
+   * Optional hook the readiness route uses to surface whether the
+   * auto-revoke-on-failure safety net is armed. When absent, the
+   * `autoRevokeArmed` field is omitted (older deployments that
+   * don't wire the watcher do not gain a new field).
+   */
+  isAutoRevokeArmed?: () => boolean;
 };
 
 export type OpsRouteDeps = {
   ops: OpsService;
   ledger: Pick<LedgerStore, "auditEvents">;
+  isAutoRevokeArmed?: () => boolean;
 };
 
 /**
@@ -57,19 +65,23 @@ export function readinessRoute(deps: ReadinessRouteDeps): Hono {
 
   app.get("/ready", async (c) => {
     const report = await deps.ops.readiness();
-    return c.json(
-      {
-        status: report.status,
-        checkedAt: report.checkedAt,
-        // Names and verdicts only — no messages, no addresses, no host
-        // names, no alert text.
-        checks: report.checks.map((check) => ({
-          name: check.name,
-          status: check.status,
-        })),
-      },
-      statusCode(report.status),
-    );
+    // The redacted `/ready` shape still surfaces whether the
+    // auto-revoke safety net is armed, because "armed but never
+    // fired" is the state an operator wants to confirm after
+    // arming. The boolean travels without a probe message or
+    // address — it is configuration, not diagnosis.
+    const body: Record<string, unknown> = {
+      status: report.status,
+      checkedAt: report.checkedAt,
+      checks: report.checks.map((check) => ({
+        name: check.name,
+        status: check.status,
+      })),
+    };
+    if (deps.isAutoRevokeArmed) {
+      body.autoRevokeArmed = deps.isAutoRevokeArmed();
+    }
+    return c.json(body, statusCode(report.status));
   });
 
   return app;
@@ -80,7 +92,11 @@ export function opsRoutes(deps: OpsRouteDeps): Hono {
 
   app.get("/v1/health", async (c) => {
     const report = await deps.ops.readiness();
-    return c.json(toJsonSafe(report), statusCode(report.status));
+    const body: Record<string, unknown> = { ...report };
+    if (deps.isAutoRevokeArmed) {
+      body.autoRevokeArmed = deps.isAutoRevokeArmed();
+    }
+    return c.json(toJsonSafe(body), statusCode(report.status));
   });
 
   app.get("/metrics", async (c) => {

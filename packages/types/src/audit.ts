@@ -33,7 +33,13 @@ export type AuditAction =
   /** The payment runtime finished wiring and began accepting work. */
   | "process.started"
   /** The payment runtime drained and shut down. */
-  | "process.stopped";
+  | "process.stopped"
+  /** Operator armed the auto-revoke-on-failure safety net. */
+  | "session.auto-revoke.armed"
+  /** Operator disarmed the auto-revoke-on-failure safety net. */
+  | "session.auto-revoke.disarmed"
+  /** The runtime fired the auto-revoke kill switch after a critical unrecovered-count crossing. */
+  | "session.auto-revoke.fired";
 
 /**
  * What the action did, from the point of view of the caller.
